@@ -54,6 +54,12 @@ jobs:
             [ -f "$file" ] || { echo "missing generated manifest: $file" >&2; exit 1; }
           done
 
+          # Homebrew 7 deprecates `postflight` in favour of `postflight_steps`,
+          # but GoReleaser 2.18 still emits the old block for cask hooks.
+          if grep -q '^  postflight do$' "$cask"; then
+            sed -i 's/^  postflight do$/  postflight_steps do/' "$cask"
+          fi
+
           main_sha=$(gh api "repos/$repo/commits/main" --jq .sha)
 
           up_to_date=1
