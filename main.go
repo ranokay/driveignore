@@ -14,7 +14,7 @@
 
 package main
 
-import "github.com/shilangyu/driveignore/cmd"
+import "github.com/ranokay/driveignore/cmd"
 
 func main() {
 	cmd.Execute()

@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 
 	"github.com/fatih/color"
-	"github.com/shilangyu/driveignore/utils"
+	"github.com/ranokay/driveignore/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -49,7 +49,7 @@ Yellow - your drive sync folder has a file that doesnt exist in input
 		case utils.MergedIgnore:
 			vPrint("loaded merged global and local .driveignore")
 		case utils.NoIgnore:
-			return errors.New("No local nor global .driveignores found")
+			return errors.New("no local nor global .driveignore files found")
 		}
 
 		missing, old := make(chan string), make(chan string)
@@ -107,14 +107,14 @@ Yellow - your drive sync folder has a file that doesnt exist in input
 	},
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) != 1 {
-			return errors.New("There should only be one argument")
+			return errors.New("there should only be one argument")
 		}
 		fstat, err := os.Stat(args[0])
 		if os.IsNotExist(err) {
-			return errors.New("Passed path doesnt exist")
+			return errors.New("passed path doesn't exist")
 		}
 		if !fstat.IsDir() {
-			return errors.New("Passed path isnt a directory")
+			return errors.New("passed path isn't a directory")
 		}
 		return nil
 	},

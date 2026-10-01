@@ -15,7 +15,6 @@
 package utils
 
 import (
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -55,18 +54,18 @@ func DriveIgnore(localPath string, mergeIgnores bool) (driveignore gitignore.Ign
 		driveignore, _ = gitignore.NewGitIgnore(globalDI, localPath)
 		ignorer = GlobalIgnore
 	} else if !os.IsNotExist(err1) && !os.IsNotExist(err2) && mergeIgnores {
-		globalContent, _ := ioutil.ReadFile(globalDI)
-		localContent, _ := ioutil.ReadFile(localDI)
+		globalContent, _ := os.ReadFile(globalDI)
+		localContent, _ := os.ReadFile(localDI)
 
-		file, err := ioutil.TempFile(localPath, "tmp.*.temp")
+		file, err := os.CreateTemp(localPath, "tmp.*.temp")
 		if err != nil {
 			log.Fatal(err)
 		}
-		defer os.Remove(file.Name())
-		file.Write([]byte(string(globalContent) + "\n" + string(localContent)))
+		defer func() { _ = os.Remove(file.Name()) }()
+		_, _ = file.Write([]byte(string(globalContent) + "\n" + string(localContent)))
 
 		driveignore, _ = gitignore.NewGitIgnore(file.Name(), localPath)
-		file.Close()
+		_ = file.Close()
 		ignorer = MergedIgnore
 	}
 	return
