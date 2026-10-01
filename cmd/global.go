@@ -29,7 +29,7 @@ func newGlobalCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "global",
 		Short: "Get the path to your global .driveignore",
-		Long: `If you wish to have a global .driveignore you can set the content of to it here.
+		Long: `If you wish to have a global .driveignore you can set its contents here.
 You can later decide if you want to use global, local or merged .driveignore.`,
 		Example: "vim $(driveignore global)",
 		Args:    cobra.NoArgs,

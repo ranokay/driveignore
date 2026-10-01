@@ -33,14 +33,14 @@ func newOptions(cmd *cobra.Command, input, output string) (driveignore.Options, 
 func singleDirArg() cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		if err := cobra.ExactArgs(1)(cmd, args); err != nil {
-			return err
+			return usageError{err}
 		}
 		info, err := os.Stat(args[0])
 		if err != nil {
-			return fmt.Errorf("cannot use %q: %w", args[0], err)
+			return usageError{fmt.Errorf("cannot use %q: %w", args[0], err)}
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("%q is not a directory", args[0])
+			return usageError{fmt.Errorf("%q is not a directory", args[0])}
 		}
 		return nil
 	}

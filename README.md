@@ -56,8 +56,13 @@ Every command documents its flags in `--help`. The shared flags are:
 
 - `-i, --input` (default `.`): source directory for `upload`, `diff`, `unify`
 - `-M, --merge-ignores`: merge the global and the local `.driveignore`
-- `--force` (`upload` only): overwrite a drive file whose name collides with a
-  source file
+- `--force` (`upload` only): overwrite existing files with the same name
+- `--dry-run` (`clean` only): list the files that would be removed without
+  removing them
+- `--prune-ignored` (`clean`, `unify`): also remove drive files excluded by
+  `.driveignore`, even when the source still contains them
+- `--exit-code` (`diff` only): exit with status 1 when differences exist
+- `--version`: print the version and exit
 
 ## global .driveignore
 
