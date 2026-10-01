@@ -40,8 +40,17 @@ homebrew_casks:
     repository:
       owner: ranokay
       name: driveignore
-      branch: main
+      branch: "goreleaser/homebrew-{{ .Tag }}"
       token: "{{ .Env.GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: ranokay
+          name: driveignore
+          branch: main
+    commit_author:
+      name: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
     binaries:
       - driveignore
     homepage: "https://github.com/ranokay/driveignore"
@@ -59,8 +68,17 @@ scoops:
     repository:
       owner: ranokay
       name: driveignore
-      branch: main
+      branch: "goreleaser/scoop-{{ .Tag }}"
       token: "{{ .Env.GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: ranokay
+          name: driveignore
+          branch: main
+    commit_author:
+      name: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
     directory: bucket
     homepage: "https://github.com/ranokay/driveignore"
     description: "Hardlink files into Google Drive while honoring .driveignore"
