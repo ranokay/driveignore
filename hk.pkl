@@ -9,4 +9,5 @@ steps {
     ["gomod-tidy"] = Builtins.gomod_tidy
     ["actionlint"] = Builtins.actionlint
     ["pinact"] = Builtins.pinact
+    ["shellcheck"] = Builtins.shellcheck
 }

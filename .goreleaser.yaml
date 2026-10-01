@@ -35,6 +35,38 @@ archives:
       - LICENSE
       - README.md
 
+homebrew_casks:
+  - name: driveignore
+    repository:
+      owner: ranokay
+      name: driveignore
+      branch: main
+      token: "{{ .Env.GITHUB_TOKEN }}"
+    binaries:
+      - driveignore
+    homepage: "https://github.com/ranokay/driveignore"
+    description: "Hardlink files into Google Drive while honoring .driveignore"
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/driveignore"]
+          end
+    commit_msg_template: "chore(homebrew): update driveignore cask to {{ .Tag }}"
+
+scoops:
+  - name: driveignore
+    repository:
+      owner: ranokay
+      name: driveignore
+      branch: main
+      token: "{{ .Env.GITHUB_TOKEN }}"
+    directory: bucket
+    homepage: "https://github.com/ranokay/driveignore"
+    description: "Hardlink files into Google Drive while honoring .driveignore"
+    license: "Apache-2.0"
+    commit_msg_template: "chore(scoop): update driveignore to {{ .Tag }}"
+
 checksum:
   name_template: checksums.txt
 

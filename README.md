@@ -19,12 +19,53 @@ This is a maintained fork of
 
 ## installing
 
-- download the archive for your OS from the
-  [releases](https://github.com/ranokay/driveignore/releases) and put
-  `driveignore` on your `PATH`, or
-- `go install github.com/ranokay/driveignore@latest` (Go 1.27 or newer), or
-- build from source with [mise](https://mise.jdx.dev/): `mise run build` writes
-  the binary to `dist/`
+### Homebrew (macOS)
+
+```sh
+brew tap ranokay/driveignore https://github.com/ranokay/driveignore
+brew install --cask driveignore
+```
+
+### Scoop (Windows)
+
+```powershell
+scoop bucket add driveignore https://github.com/ranokay/driveignore
+scoop install driveignore
+```
+
+### install script (macOS, Linux)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ranokay/driveignore/main/install.sh | sh
+```
+
+Installs the latest release to `~/.local/bin` and verifies the download
+against the release checksums. Override the destination with `INSTALL_DIR`
+and pin a version with `VERSION`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ranokay/driveignore/main/install.sh | \
+  VERSION=v1.2.0 INSTALL_DIR="$HOME/bin" sh
+```
+
+### Go
+
+```sh
+go install github.com/ranokay/driveignore@latest
+```
+
+Requires Go 1.27 or newer; make sure `$(go env GOPATH)/bin` is on your `PATH`.
+
+### manual archives
+
+Download the archive for your OS from the
+[releases](https://github.com/ranokay/driveignore/releases), extract it, and
+move the `driveignore` binary (`driveignore.exe` on Windows) into a directory
+on your `PATH` — for example `~/.local/bin` on macOS/Linux, or
+`%USERPROFILE%\bin` added to `PATH` on Windows. Running the binary from the
+extraction directory only works while you stay there, so prefer one of the
+options above. Winget is not published yet; Windows users can use Scoop or the
+zip archive.
 
 ## how to use
 
