@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Options configures a core operation. Input is the source directory; Output
@@ -23,6 +24,10 @@ type Options struct {
 	// PruneIgnored makes Clean remove drive files that the ignore rules
 	// exclude even when the source still contains them.
 	PruneIgnored bool
+	// Copy copies files instead of hardlinking them. Use it on filesystems
+	// that do not support hardlinks (virtual drives, FAT, network shares);
+	// clean and diff then treat equal size and modification time as in sync.
+	Copy bool
 
 	// Out receives user-facing notices. Defaults to io.Discard.
 	Out io.Writer
@@ -148,11 +153,7 @@ func (o Options) uploadEntry(sourcePath, goalPath string, entry fs.DirEntry, rel
 		if err := os.MkdirAll(filepath.Dir(goalPath), 0o755); err != nil {
 			return err
 		}
-		if err := o.link(sourcePath, goalPath); err != nil {
-			return fmt.Errorf("link %s: %w", relSlash, err)
-		}
-		o.logf("created hard link: %s", relSlash)
-		return nil
+		return o.installFile(sourcePath, goalPath, relSlash)
 	}
 	return o.reconcile(sourcePath, goalPath, entry, goalInfo, relSlash)
 }
@@ -195,7 +196,7 @@ func (o Options) reconcile(sourcePath, goalPath string, entry fs.DirEntry, goalI
 		if err != nil {
 			return fmt.Errorf("stat %s: %w", sourcePath, err)
 		}
-		if os.SameFile(sourceInfo, goalInfo) {
+		if o.inSync(sourceInfo, goalInfo) {
 			return nil
 		}
 	}
@@ -206,30 +207,104 @@ func (o Options) reconcile(sourcePath, goalPath string, entry fs.DirEntry, goalI
 	if err := os.MkdirAll(filepath.Dir(goalPath), 0o755); err != nil {
 		return err
 	}
-	return o.replaceWithLink(sourcePath, goalPath, rel)
+	return o.installFile(sourcePath, goalPath, rel)
 }
 
-// replaceWithLink links sourcePath beside goalPath and renames the new link
-// over the goal. A failed link never removes the existing drive file, and the
-// rename replaces a regular file or symlink in one step.
-func (o Options) replaceWithLink(sourcePath, goalPath, rel string) error {
+// inSync reports whether the goal already matches, from Upload's point of
+// view: in link mode only a hardlink counts, while copy mode also accepts a
+// file with the same size and modification time.
+func (o Options) inSync(sourceInfo, goalInfo os.FileInfo) bool {
+	if os.SameFile(sourceInfo, goalInfo) {
+		return true
+	}
+	return o.Copy && matchingSizeAndTime(sourceInfo, goalInfo)
+}
+
+// installFile places the source file at goalPath as a hardlink, or as a copy
+// in copy mode. It always works through a temporary sibling and a rename, so
+// an existing drive file is never missing while the new one is prepared.
+func (o Options) installFile(sourcePath, goalPath, rel string) error {
 	tmp, err := os.CreateTemp(filepath.Dir(goalPath), ".driveignore-*")
 	if err != nil {
-		return fmt.Errorf("replace %s: %w", rel, err)
+		return fmt.Errorf("install %s: %w", rel, err)
 	}
 	tmpName := tmp.Name()
 	_ = tmp.Close()
-	_ = os.Remove(tmpName) // free the name for the link
-	if err := o.link(sourcePath, tmpName); err != nil {
+	_ = os.Remove(tmpName) // free the name for the link or copy
+
+	var installErr error
+	if o.Copy {
+		installErr = copyFile(sourcePath, tmpName)
+	} else {
+		installErr = o.link(sourcePath, tmpName)
+	}
+	if installErr != nil {
 		_ = os.Remove(tmpName)
-		return fmt.Errorf("link %s: %w", rel, err)
+		return fmt.Errorf("install %s: %w", rel, installErr)
 	}
 	if err := os.Rename(tmpName, goalPath); err != nil {
 		_ = os.Remove(tmpName)
-		return fmt.Errorf("replace %s: %w", rel, err)
+		return fmt.Errorf("install %s: %w", rel, err)
 	}
-	o.logf("created hard link: %s", rel)
+	if o.Copy {
+		o.logf("copied file: %s", rel)
+	} else {
+		o.logf("created hard link: %s", rel)
+	}
 	return nil
+}
+
+// copyFile copies sourcePath to dst, preserving permissions and modification
+// time so later comparisons can tell an up-to-date copy from a stale one.
+func copyFile(sourcePath, dst string) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = source.Close() }()
+	info, err := source.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, source); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Chtimes(dst, time.Now(), info.ModTime())
+}
+
+// filesInSync reports whether the drive-side file already matches the source:
+// the same file (hardlink) or a copy with equal size and modification time.
+// Clean and diff use it mode-agnostically so copy-mode mirrors are not
+// deleted; timestamps are compared with a small tolerance because filesystems
+// round modification times differently.
+func filesInSync(sourceInfo, goalInfo os.FileInfo) bool {
+	if sourceInfo.IsDir() || goalInfo.IsDir() {
+		return false
+	}
+	if os.SameFile(sourceInfo, goalInfo) {
+		return true
+	}
+	return matchingSizeAndTime(sourceInfo, goalInfo)
+}
+
+// matchingSizeAndTime reports whether two files look like one was copied from
+// the other: equal size and modification time within the timestamp rounding
+// tolerance of common filesystems.
+func matchingSizeAndTime(sourceInfo, goalInfo os.FileInfo) bool {
+	if sourceInfo.Size() != goalInfo.Size() {
+		return false
+	}
+	const tolerance = 2 * time.Second
+	delta := goalInfo.ModTime().Sub(sourceInfo.ModTime())
+	return delta <= tolerance && delta >= -tolerance
 }
 
 // Clean removes files from Output whose source counterpart is missing or is a
@@ -272,9 +347,9 @@ func Clean(o Options) ([]string, error) {
 			if err != nil {
 				return err
 			}
-			sameFile := os.SameFile(entryInfo, sourceInfo)
+			keep := filesInSync(sourceInfo, entryInfo)
 			pruned := ignored != nil && ignored.Match(sourcePath, false)
-			if sameFile && !pruned {
+			if keep && !pruned {
 				return nil
 			}
 		}
@@ -315,7 +390,7 @@ func sameEntry(o Options, entry fs.DirEntry, other string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return os.SameFile(entryInfo, otherInfo), nil
+	return filesInSync(otherInfo, entryInfo), nil
 }
 
 // Diff walks both sides and reports paths that exist on only one of them.
