@@ -4,21 +4,21 @@ cask "driveignore" do
 
   on_macos do
     on_arm do
-      sha256 "440f5d0637180bd3342a93454a93f273a254003899a88acd28668efbfc474889"
+      sha256 "07e8d68898cda54da8f2d93eddfc6e16a08e0ec43171e6527031f34fc2dc32af"
       url "https://github.com/ranokay/driveignore/releases/download/v#{version}/driveignore_#{version}_darwin_arm64.tar.gz"
     end
     on_intel do
-      sha256 "ee473138b967f4d534041f941e8a8b4a5ae89e53b42099401b698818c06c6ce4"
+      sha256 "fbde0668a63f4c246caf28cf6558f549b1c52f92d329e3079ac73cae007949a2"
       url "https://github.com/ranokay/driveignore/releases/download/v#{version}/driveignore_#{version}_darwin_amd64.tar.gz"
     end
   end
   on_linux do
     on_arm do
-      sha256 "d91cbaf5015d74a77684b75ba14641150e43ac929ecbcab4d3fca83c084b31f8"
+      sha256 "8ea33b2b57bb55f3b5f22f07d3ca48601d2b4787bc713c5b6ef7725167f99fc4"
       url "https://github.com/ranokay/driveignore/releases/download/v#{version}/driveignore_#{version}_linux_arm64.tar.gz"
     end
     on_intel do
-      sha256 "4c63088fa756479c4c947959a715266ebe315de7522f81bcaad25fbb569d54b1"
+      sha256 "d053e5ad5f52c5780754e738d780bad545709e99faef7cbb5bb910cc1bf2535b"
       url "https://github.com/ranokay/driveignore/releases/download/v#{version}/driveignore_#{version}_linux_amd64.tar.gz"
     end
   end
