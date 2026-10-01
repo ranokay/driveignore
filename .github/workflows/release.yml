@@ -54,11 +54,24 @@ jobs:
             [ -f "$file" ] || { echo "missing generated manifest: $file" >&2; exit 1; }
           done
 
-          # Homebrew 7 deprecates `postflight` in favour of `postflight_steps`,
-          # but GoReleaser 2.18 still emits the old block for cask hooks.
-          if grep -q '^  postflight do$' "$cask"; then
-            sed -i 's/^  postflight do$/  postflight_steps do/' "$cask"
-          fi
+          # Homebrew 7 renamed `postflight` to `postflight_steps`, whose DSL has
+          # no staged_path; the command must run from the staged directory.
+          python3 - <<'PY'
+          import pathlib, re, sys
+
+          path = pathlib.Path("dist/homebrew/Casks/driveignore.rb")
+          source = path.read_text()
+          block = """  postflight_steps do
+              if OS.mac?
+                run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "driveignore"], chdir: "."
+              end
+          end"""
+          fixed, count = re.subn(r"  postflight(_steps)? do\n.*?\n  end", block, source, flags=re.S)
+          if count != 1:
+              print(f"expected one postflight block, rewrote {count}", file=sys.stderr)
+              sys.exit(1)
+          path.write_text(fixed)
+          PY
 
           main_sha=$(gh api "repos/$repo/commits/main" --jq .sha)
 
