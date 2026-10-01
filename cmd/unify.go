@@ -1,4 +1,4 @@
-// Copyright © 2019 Marcin Wojnarowski xmaricnmarcin@gmail.com
+// Copyright © 2019 Marcin Wojnarowski xmarcinmarcin@gmail.com
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,66 +15,38 @@
 package cmd
 
 import (
-	"errors"
-	"os"
-
 	"github.com/spf13/cobra"
+
+	"github.com/ranokay/driveignore/internal/driveignore"
 )
 
-// unifyCmd represents the unify command
-var unifyCmd = &cobra.Command{
-	Use:   "unify [output path]",
-	Short: "Unifies 2 directories where input is the source",
-	Long: `Uploads all files (with respect to .driveignores)
-aswell as removes legacy files from the drive sync folder.
+func newUnifyCmd() *cobra.Command {
+	var (
+		input        string
+		mergeIgnores bool
+	)
+	cmd := &cobra.Command{
+		Use:   "unify [output path]",
+		Short: "Unifies 2 directories where input is the source",
+		Long: `Uploads all files (with respect to .driveignores)
+as well as removes legacy files from the drive sync folder.
 
-Its an alias for: 'driveignore upload [args] [flags] --force' + 'driveignore clean [args] [flags]'`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// set flags
-		uploadForce = true
-		uploadMergeIgnores = unifyMergeIgnores
-		uploadInput = unifyInput
-		cleanInput = unifyInput
-
-		// call commands
-		errs := make(chan error, 2)
-		go func() {
-			errs <- uploadCmd.RunE(cmd, args)
-		}()
-		go func() {
-			errs <- cleanCmd.RunE(cmd, args)
-		}()
-
-		for i := 0; i < cap(errs); i++ {
-			if err := <-errs; err != nil {
+It is an alias for: 'driveignore upload [args] [flags] --force' + 'driveignore clean [args] [flags]'`,
+		Args: singleDirArg(),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts, err := newOptions(cmd, input, args[0])
+			if err != nil {
 				return err
 			}
-		}
-
-		return nil
-	},
-	Args: func(cmd *cobra.Command, args []string) error {
-		if len(args) != 1 {
-			return errors.New("there should only be one argument")
-		}
-		fstat, err := os.Stat(args[0])
-		if os.IsNotExist(err) {
-			return errors.New("passed path doesn't exist")
-		}
-		if !fstat.IsDir() {
-			return errors.New("passed path isn't a directory")
-		}
-		return nil
-	},
+			opts.MergeIgnores = mergeIgnores
+			return driveignore.Unify(opts)
+		},
+	}
+	cmd.Flags().StringVarP(&input, "input", "i", ".", "Input directory of the files to be uploaded")
+	cmd.Flags().BoolVarP(&mergeIgnores, "merge-ignores", "M", false, "Merges global and input dir .driveignore")
+	return cmd
 }
 
-var unifyInput string
-var unifyMergeIgnores bool
-
 func init() {
-	rootCmd.AddCommand(unifyCmd)
-
-	// local flags
-	unifyCmd.Flags().StringVarP(&unifyInput, "input", "i", ".", "Input directory of the files to be uploaded")
-	unifyCmd.Flags().BoolVarP(&unifyMergeIgnores, "merge-ignores", "M", false, "Merges global and input dir .driveignore")
+	rootCmd.AddCommand(newUnifyCmd())
 }
