@@ -225,6 +225,28 @@ func TestLoadIgnoreSelectsLocalGlobalAndMerged(t *testing.T) {
 	})
 }
 
+func TestUploadAndCleanLeaveSymlinksAlone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "real.txt"), "real")
+	require.NoError(t, os.Symlink(filepath.Join(src, "real.txt"), filepath.Join(src, "link.txt")))
+
+	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t)}))
+	assertNotExist(t, filepath.Join(out, "link.txt"))
+	assertLinked(t, filepath.Join(src, "real.txt"), filepath.Join(out, "real.txt"))
+
+	// Symlinks already inside the drive folder are left alone by clean.
+	require.NoError(t, os.Symlink(filepath.Join(out, "real.txt"), filepath.Join(out, "stray-link.txt")))
+	removed, err := Clean(Options{Input: src, Output: out})
+	require.NoError(t, err)
+	require.Empty(t, removed)
+	_, err = os.Lstat(filepath.Join(out, "stray-link.txt"))
+	require.NoError(t, err, "clean must not remove symlinks from the drive folder")
+}
+
 func TestEnsureFileCreatesMissingFileAndKeepsExistingContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", ".global_driveignore")
 	require.NoError(t, EnsureFile(path))

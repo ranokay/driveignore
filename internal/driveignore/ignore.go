@@ -1,13 +1,15 @@
 package driveignore
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
-	gitignore "github.com/monochromegane/go-gitignore"
+	gitignore "github.com/go-git/go-git/v5/plumbing/format/gitignore"
 )
 
 // IgnoreType says which .driveignore files an operation loaded.
@@ -24,11 +26,30 @@ const (
 	MergedIgnore
 )
 
+// Matcher reports whether a path (relative to or below the source directory)
+// is excluded by the loaded .driveignore files.
+type Matcher interface {
+	Match(path string, isDir bool) bool
+}
+
+type pathMatcher struct {
+	matcher gitignore.Matcher
+	root    string
+}
+
+func (m pathMatcher) Match(path string, isDir bool) bool {
+	rel, err := filepath.Rel(m.root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return m.matcher.Match(strings.Split(filepath.ToSlash(rel), "/"), isDir)
+}
+
 // LoadIgnore resolves the .driveignore files that apply to localPath: the
 // local file at localPath/.driveignore and the global file at globalPath.
 // When merge is set and both files exist, global patterns are applied first
-// and local patterns can override them.
-func LoadIgnore(globalPath, localPath string, merge bool) (gitignore.IgnoreMatcher, IgnoreType, error) {
+// and local patterns override them.
+func LoadIgnore(globalPath, localPath string, merge bool) (Matcher, IgnoreType, error) {
 	localContent, localErr := os.ReadFile(filepath.Join(localPath, ".driveignore"))
 	if localErr != nil && !errors.Is(localErr, fs.ErrNotExist) {
 		return nil, NoIgnore, localErr
@@ -42,16 +63,35 @@ func LoadIgnore(globalPath, localPath string, merge bool) (gitignore.IgnoreMatch
 
 	switch {
 	case localExists && (!globalExists || !merge):
-		return gitignore.NewGitIgnoreFromReader(localPath, bytes.NewReader(localContent)), LocalIgnore, nil
+		return newMatcher(localPath, localContent), LocalIgnore, nil
 	case globalExists && (!localExists || !merge):
-		return gitignore.NewGitIgnoreFromReader(localPath, bytes.NewReader(globalContent)), GlobalIgnore, nil
+		return newMatcher(localPath, globalContent), GlobalIgnore, nil
 	case localExists && globalExists:
 		merged := append(bytes.Clone(globalContent), '\n')
 		merged = append(merged, localContent...)
-		return gitignore.NewGitIgnoreFromReader(localPath, bytes.NewReader(merged)), MergedIgnore, nil
+		return newMatcher(localPath, merged), MergedIgnore, nil
 	default:
 		return nil, NoIgnore, nil
 	}
+}
+
+// newMatcher parses gitignore-syntax content. Blank lines and comments are
+// skipped here; a backslash-escaped leading hash is a literal pattern, so the
+// escape is stripped to keep matching portable across operating systems.
+func newMatcher(root string, content []byte) Matcher {
+	var patterns []gitignore.Pattern
+	scanner := bufio.NewScanner(bytes.NewReader(content))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, `\#`); ok {
+			line = "#" + rest
+		}
+		patterns = append(patterns, gitignore.ParsePattern(line, nil))
+	}
+	return pathMatcher{matcher: gitignore.NewMatcher(patterns), root: root}
 }
 
 // GlobalIgnorePath returns the path of the global .driveignore inside the
