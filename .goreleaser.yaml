@@ -37,6 +37,11 @@ archives:
 
 homebrew_casks:
   - name: driveignore
+    # repository is required for GoReleaser to generate the cask at all;
+    # skip_upload keeps it in dist for the release workflow to commit.
+    repository:
+      owner: ranokay
+      name: driveignore
     skip_upload: true
     binaries:
       - driveignore
