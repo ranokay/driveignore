@@ -6,14 +6,14 @@
             "bin": [
                 "driveignore.exe"
             ],
-            "hash": "e2c6426d554687fa1a9bb959b238b93faeb3e64677e3ae92ce3ed8f80033047e"
+            "hash": "3f900c27f23335e24c7aa3b53283e37f3ff53808b5eecf10a6531f3a23db10e3"
         },
         "arm64": {
             "url": "https://github.com/ranokay/driveignore/releases/download/v1.3.0/driveignore_1.3.0_windows_arm64.zip",
             "bin": [
                 "driveignore.exe"
             ],
-            "hash": "190a854ceae6ff063662295735260ddae3de6b8ee36080d1c40c22f173e30861"
+            "hash": "4c1d00b53488d470749a00758b6de253b20472d81966fa7be56981cc9c20bc93"
         }
     },
     "homepage": "https://github.com/ranokay/driveignore",
