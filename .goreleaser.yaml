@@ -37,20 +37,7 @@ archives:
 
 homebrew_casks:
   - name: driveignore
-    repository:
-      owner: ranokay
-      name: driveignore
-      branch: "goreleaser/homebrew-{{ .Tag }}"
-      token: "{{ .Env.GITHUB_TOKEN }}"
-      pull_request:
-        enabled: true
-        base:
-          owner: ranokay
-          name: driveignore
-          branch: main
-    commit_author:
-      name: github-actions[bot]
-      email: 41898282+github-actions[bot]@users.noreply.github.com
+    skip_upload: true
     binaries:
       - driveignore
     homepage: "https://github.com/ranokay/driveignore"
@@ -61,29 +48,14 @@ homebrew_casks:
           if OS.mac?
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/driveignore"]
           end
-    commit_msg_template: "chore(homebrew): update driveignore cask to {{ .Tag }}"
 
 scoops:
   - name: driveignore
-    repository:
-      owner: ranokay
-      name: driveignore
-      branch: "goreleaser/scoop-{{ .Tag }}"
-      token: "{{ .Env.GITHUB_TOKEN }}"
-      pull_request:
-        enabled: true
-        base:
-          owner: ranokay
-          name: driveignore
-          branch: main
-    commit_author:
-      name: github-actions[bot]
-      email: 41898282+github-actions[bot]@users.noreply.github.com
+    skip_upload: true
     directory: bucket
     homepage: "https://github.com/ranokay/driveignore"
     description: "Hardlink files into Google Drive while honoring .driveignore"
     license: "Apache-2.0"
-    commit_msg_template: "chore(scoop): update driveignore to {{ .Tag }}"
 
 checksum:
   name_template: checksums.txt

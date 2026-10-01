@@ -35,26 +35,63 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: "dist/*"
-      # main is protected by a ruleset: direct pushes are rejected, so
-      # GoReleaser opens pull requests for the cask and Scoop manifest and we
-      # merge them here. GitHub's merge commit satisfies the signature rule.
-      - name: Merge manifest pull requests
+      # main is protected by a ruleset that requires pull requests and signed
+      # commits. GoReleaser's API commits are unsigned, so the generated cask
+      # and Scoop manifest are committed here through GitHub's
+      # createCommitOnBranch mutation, which produces a verified signature,
+      # and merged as a pull request.
+      - name: Publish release manifests
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -eu
-          merge_pr() {
-            branch="$1"
-            for _ in $(seq 1 12); do
-              number=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json number --jq '.[0].number')
-              if [ -n "$number" ]; then
-                gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --merge && return 0
-              fi
-              sleep 5
-            done
-            echo "no mergeable manifest PR found for $branch" >&2
-            return 1
-          }
-          merge_pr "goreleaser/homebrew-${GITHUB_REF_NAME}"
-          merge_pr "goreleaser/scoop-${GITHUB_REF_NAME}"
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          tag="$GITHUB_REF_NAME"
+          cask="dist/homebrew/Casks/driveignore.rb"
+          scoop="dist/scoop/bucket/driveignore.json"
+          for file in "$cask" "$scoop"; do
+            [ -f "$file" ] || { echo "missing generated manifest: $file" >&2; exit 1; }
+          done
+
+          main_sha=$(gh api "repos/$repo/commits/main" --jq .sha)
+
+          up_to_date=1
+          for pair in "Casks/driveignore.rb:$cask" "bucket/driveignore.json:$scoop"; do
+            path="${pair%%:*}"
+            file="${pair#*:}"
+            remote=$(gh api "repos/$repo/contents/$path?ref=main" --jq .content 2>/dev/null | tr -d '\n' || true)
+            local=$(base64 < "$file" | tr -d '\n')
+            [ "$remote" = "$local" ] || up_to_date=0
+          done
+          if [ "$up_to_date" = 1 ]; then
+            echo "manifests already up to date on main"
+            exit 0
+          fi
+
+          branch="goreleaser/manifests-$tag"
+          gh api -X POST "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$main_sha" >/dev/null
+
+          cask_b64=$(base64 < "$cask" | tr -d '\n')
+          scoop_b64=$(base64 < "$scoop" | tr -d '\n')
+          payload=$(mktemp)
+          cat > "$payload" <<JSON
+          {"query":"mutation(\$input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: \$input) { commit { oid } } }","variables":{"input":{"branch":{"repositoryNameWithOwner":"$repo","branchName":"$branch"},"message":{"headline":"chore(release): update Homebrew cask and Scoop manifest for $tag"},"expectedHeadOid":"$main_sha","fileChanges":{"additions":[{"path":"Casks/driveignore.rb","contents":"$cask_b64"},{"path":"bucket/driveignore.json","contents":"$scoop_b64"}]}}}}
+          JSON
+          result=$(gh api graphql --input "$payload")
+          if [ -z "$(echo "$result" | jq -r '.data.createCommitOnBranch.commit.oid // empty')" ]; then
+            echo "$result" >&2
+            exit 1
+          fi
+
+          gh pr create --repo "$repo" --base main --head "$branch" \
+            --title "chore(release): update Homebrew cask and Scoop manifest for $tag" \
+            --body "Automated manifest update for $tag. The commit is created through the GitHub API so it carries a verified signature, and is merged through this pull request to satisfy the main ruleset."
+          for _ in $(seq 1 12); do
+            if gh pr merge "$branch" --repo "$repo" --merge --delete-branch; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "failed to merge manifest PR for $branch" >&2
+          exit 1
