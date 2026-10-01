@@ -23,8 +23,12 @@ This is a maintained fork of
 
 ```sh
 brew tap ranokay/driveignore https://github.com/ranokay/driveignore
+brew trust ranokay/driveignore
 brew install --cask driveignore
 ```
+
+`brew trust` is required by recent Homebrew versions for casks from third-party
+taps.
 
 ### Scoop (Windows)
 
