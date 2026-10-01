@@ -35,6 +35,9 @@ func TestIgnoreMatchesGitCheckIgnore(t *testing.T) {
 	}, "\n") + "\n"
 	write(t, filepath.Join(local, ".driveignore"), patterns)
 	write(t, filepath.Join(local, ".gitignore"), patterns)
+	nested := "build/\n!q1.log\n"
+	write(t, filepath.Join(local, "sub", ".driveignore"), nested)
+	write(t, filepath.Join(local, "sub", ".gitignore"), nested)
 
 	cases := []struct {
 		path  string
@@ -58,6 +61,11 @@ func TestIgnoreMatchesGitCheckIgnore(t *testing.T) {
 		{"q1.log", false},
 		{"#literal", false},
 		{"README.md", false},
+		{"sub/build", true},
+		{"sub/q1.log", false},
+		{"sub/q2.log", false},
+		{"sub/app.log", false},
+		{"build", true},
 	}
 	for _, c := range cases {
 		full := filepath.Join(local, filepath.FromSlash(c.path))

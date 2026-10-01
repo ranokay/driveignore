@@ -11,7 +11,8 @@ import (
 	gitignore "github.com/go-git/go-git/v5/plumbing/format/gitignore"
 )
 
-// ErrNoIgnore reports that neither a local nor a global .driveignore exists.
+// ErrNoIgnore reports that no .driveignore file exists anywhere in the source
+// tree (neither local, nested, nor global).
 var ErrNoIgnore = errors.New("no .driveignore found")
 
 // Matcher reports whether a path (relative to or below the source directory)
@@ -21,8 +22,8 @@ type Matcher interface {
 }
 
 type pathMatcher struct {
-	matcher gitignore.Matcher
-	root    string
+	patterns []gitignore.Pattern
+	root     string
 }
 
 func (m pathMatcher) Match(path string, isDir bool) bool {
@@ -30,46 +31,111 @@ func (m pathMatcher) Match(path string, isDir bool) bool {
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return false
 	}
-	return m.matcher.Match(strings.Split(filepath.ToSlash(rel), "/"), isDir)
+	return matchPatterns(m.patterns, strings.Split(filepath.ToSlash(rel), "/"), isDir)
 }
 
-// LoadIgnore resolves the .driveignore files that apply to localPath: the
-// local file at localPath/.driveignore and the global file at globalPath.
-// When merge is set and both files exist, global patterns are applied first
-// and local patterns override them. ErrNoIgnore is returned when neither file
-// exists.
-func LoadIgnore(globalPath, localPath string, merge bool) (Matcher, error) {
-	localContent, localErr := os.ReadFile(filepath.Join(localPath, ".driveignore"))
-	if localErr != nil && !errors.Is(localErr, fs.ErrNotExist) {
-		return nil, localErr
+// matchPatterns applies patterns in reverse order so the last matching
+// pattern wins, the way git resolves overlapping rules.
+func matchPatterns(patterns []gitignore.Pattern, path []string, isDir bool) bool {
+	for i := len(patterns) - 1; i >= 0; i-- {
+		switch patterns[i].Match(path, isDir) {
+		case gitignore.Exclude:
+			return true
+		case gitignore.Include:
+			return false
+		}
 	}
-	globalContent, globalErr := os.ReadFile(globalPath)
-	if globalErr != nil && !errors.Is(globalErr, fs.ErrNotExist) {
-		return nil, globalErr
-	}
-	localExists := localErr == nil
-	globalExists := globalErr == nil
+	return false
+}
 
+// LoadIgnore resolves the ignore rules that apply to localPath: the global
+// file at globalPath, the root file at localPath/.driveignore, and every
+// nested .driveignore below localPath. Nested patterns are anchored to their
+// own directory and override rules from shallower files. When merge is false
+// and a local root file exists, the global file is not used.
+func LoadIgnore(globalPath, localPath string, merge bool) (Matcher, error) {
+	globalPatterns, globalExists, err := readPatterns(globalPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	localFile := filepath.Join(localPath, ".driveignore")
+	localPatterns, localExists, err := readPatterns(localFile, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var patterns []gitignore.Pattern
 	switch {
 	case localExists && (!globalExists || !merge):
-		return newMatcher(localPath, localContent), nil
+		patterns = append(patterns, localPatterns...)
 	case globalExists && (!localExists || !merge):
-		return newMatcher(localPath, globalContent), nil
+		patterns = append(patterns, globalPatterns...)
 	case localExists && globalExists:
-		merged := append(bytes.Clone(globalContent), '\n')
-		merged = append(merged, localContent...)
-		return newMatcher(localPath, merged), nil
-	default:
+		patterns = append(patterns, globalPatterns...)
+		patterns = append(patterns, localPatterns...)
+	}
+
+	nested, nestedFound, err := nestedPatterns(localPath)
+	if err != nil {
+		return nil, err
+	}
+	patterns = append(patterns, nested...)
+	if !localExists && !globalExists && !nestedFound {
 		return nil, ErrNoIgnore
 	}
+	return pathMatcher{patterns: patterns, root: localPath}, nil
 }
 
-// newMatcher parses gitignore-syntax content. Blank lines and comments are
+// readPatterns parses the file at path into patterns anchored at domain. A
+// missing file is not an error.
+func readPatterns(path string, domain []string) ([]gitignore.Pattern, bool, error) {
+	content, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return parsePatterns(content, domain), true, nil
+}
+
+// nestedPatterns collects .driveignore files below root, in walk order so
+// parents come before children and deeper files win. The root file is skipped
+// because LoadIgnore handles it. found reports whether any nested file exists.
+func nestedPatterns(root string) (patterns []gitignore.Pattern, found bool, err error) {
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || entry.Name() != ".driveignore" {
+			return nil
+		}
+		dir := filepath.Dir(path)
+		if dir == root {
+			return nil
+		}
+		rel, err := filepath.Rel(root, dir)
+		if err != nil {
+			return err
+		}
+		domain := strings.Split(filepath.ToSlash(rel), "/")
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		patterns = append(patterns, parsePatterns(content, domain)...)
+		found = true
+		return nil
+	})
+	return patterns, found, err
+}
+
+// parsePatterns parses gitignore-syntax content. Blank lines and comments are
 // skipped here; a backslash-escaped leading hash is a literal pattern, so the
 // escape is stripped to keep matching portable across operating systems.
 // Lines are split without a length limit so long rules cannot silently drop
 // the patterns that follow them.
-func newMatcher(root string, content []byte) Matcher {
+func parsePatterns(content []byte, domain []string) []gitignore.Pattern {
 	var patterns []gitignore.Pattern
 	for _, raw := range bytes.Split(content, []byte("\n")) {
 		line := strings.TrimSuffix(string(raw), "\r")
@@ -86,9 +152,9 @@ func newMatcher(root string, content []byte) Matcher {
 		if strings.HasSuffix(line, "/**") {
 			line += "/*"
 		}
-		patterns = append(patterns, gitignore.ParsePattern(line, nil))
+		patterns = append(patterns, gitignore.ParsePattern(line, domain))
 	}
-	return pathMatcher{matcher: gitignore.NewMatcher(patterns), root: root}
+	return patterns
 }
 
 // GlobalIgnorePath returns the path of the global .driveignore inside the

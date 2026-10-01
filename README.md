@@ -75,6 +75,10 @@ one; pass `--merge-ignores` to combine both.
 Patterns follow the same rules as `.gitignore`: `*`, `?`, `**`, `!` negation,
 leading `/` anchoring and trailing `/` for directory-only matches.
 
+`.driveignore` files can live in subdirectories. Each one applies to its own
+subtree, its patterns are anchored to the directory containing the file, and
+deeper files override shallower ones — the same way `.gitignore` works.
+
 Symlinks are skipped: they are neither uploaded nor followed, and `clean`
 leaves symlinks inside the drive folder untouched.
 
