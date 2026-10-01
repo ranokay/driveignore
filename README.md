@@ -88,11 +88,16 @@ leaves symlinks inside the drive folder untouched.
 ## development
 
 ```sh
-mise install        # install the pinned Go toolchain and tools
-mise run check      # formatting, vet, lint and tests
-mise run test:race  # tests with the race detector
-mise run bench      # benchmarks
+mise install            # install the pinned Go toolchain and tools
+mise run check          # formatting, vet, lint and tests
+mise run test:race      # tests with the race detector
+mise run bench          # benchmarks
+mise run hooks:install  # install the hk pre-commit hook for this clone
 ```
+
+The hooks run gofmt, golangci-lint, `go mod tidy`, actionlint and pinact on
+staged files; bypass a run with `HK=0 git commit ...` or `git commit --no-verify`.
+`hk check --all` runs the same steps over the whole repository.
 
 ## license
 

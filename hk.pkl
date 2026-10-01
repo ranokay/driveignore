@@ -1,0 +1,12 @@
+amends "package://github.com/jdx/hk/releases/download/v2.4.0/hk@2.4.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v2.4.0/hk@2.4.0#/Builtins.pkl"
+
+// Fast checks: run on staged files at commit time and on the whole
+// repository in CI with `hk check --all`.
+steps {
+    ["go-fmt"] = Builtins.go_fmt
+    ["golangci-lint"] = Builtins.golangci_lint
+    ["gomod-tidy"] = Builtins.gomod_tidy
+    ["actionlint"] = Builtins.actionlint
+    ["pinact"] = Builtins.pinact
+}
