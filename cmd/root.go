@@ -29,6 +29,7 @@ var rootCmd = &cobra.Command{
 It will look for a .driveignore, ignore the specified files
 and make a hard link of your files to your drivesync folder
 meaning no files duplicates, and no repetitive cli calls.`,
+	SilenceErrors: true,
 }
 
 var verbose bool
@@ -36,11 +37,11 @@ var verbose bool
 // Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
 }
 
 func init() {
-	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "Prints out whats happening")
+	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "print what is happening")
 }

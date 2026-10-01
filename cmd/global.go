@@ -17,55 +17,41 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
-	"github.com/ranokay/driveignore/utils"
+	"github.com/ranokay/driveignore/internal/driveignore"
 )
 
-// globalCmd represents the global command
-var globalCmd = &cobra.Command{
-	Use:   "global",
-	Short: "Get the path to your global .driveignore",
-	Long: `If you wish to have a global .driveignore you can set the content of to it here.
+func newGlobalCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "global",
+		Short: "Get the path to your global .driveignore",
+		Long: `If you wish to have a global .driveignore you can set the content of to it here.
 You can later decide if you want to use global, local or merged .driveignore.`,
-	Example: "vim $(driveignore global)",
-	RunE:    globalRun(utils.GlobalDriveignorePath()),
-	Args:    globalArg,
-}
-
-var (
-	errNoArg = errors.New("there should only be no arguments")
-)
-
-func globalRun(globalDriveignorePath string) func(cmd *cobra.Command, args []string) error {
-	return func(cmd *cobra.Command, args []string) error {
-		vPrint := utils.VPrintWrapper(verbose)
-
-		if _, err := os.Stat(globalDriveignorePath); os.IsNotExist(err) {
-			if err := os.MkdirAll(filepath.Dir(globalDriveignorePath), os.ModePerm); err != nil {
+		Example: "vim $(driveignore global)",
+		Args:    cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			path, err := driveignore.GlobalIgnorePath()
+			if err != nil {
 				return err
 			}
-			if err := os.WriteFile(globalDriveignorePath, []byte{}, os.ModePerm); err != nil {
+			if verbose {
+				if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), ".global_driveignore didnt exist, created a new one")
+				}
+			}
+			if err := driveignore.EnsureFile(path); err != nil {
 				return err
 			}
-			vPrint(".global_driveignore didnt exist, created a new one")
-		}
-
-		fmt.Println(globalDriveignorePath)
-		return nil
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), path)
+			return nil
+		},
 	}
-}
-
-func globalArg(_ *cobra.Command, args []string) error {
-	if len(args) != 0 {
-		return errNoArg
-	}
-	return nil
 }
 
 func init() {
-	rootCmd.AddCommand(globalCmd)
+	rootCmd.AddCommand(newGlobalCmd())
 }
