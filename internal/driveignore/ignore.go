@@ -1,7 +1,6 @@
 package driveignore
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"io/fs"
@@ -78,16 +77,24 @@ func LoadIgnore(globalPath, localPath string, merge bool) (Matcher, IgnoreType, 
 // newMatcher parses gitignore-syntax content. Blank lines and comments are
 // skipped here; a backslash-escaped leading hash is a literal pattern, so the
 // escape is stripped to keep matching portable across operating systems.
+// Lines are split without a length limit so long rules cannot silently drop
+// the patterns that follow them.
 func newMatcher(root string, content []byte) Matcher {
 	var patterns []gitignore.Pattern
-	scanner := bufio.NewScanner(bytes.NewReader(content))
-	for scanner.Scan() {
-		line := scanner.Text()
+	for _, raw := range bytes.Split(content, []byte("\n")) {
+		line := strings.TrimSuffix(string(raw), "\r")
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		if rest, ok := strings.CutPrefix(line, `\#`); ok {
 			line = "#" + rest
+		}
+		// Git treats "foo/**" as everything inside foo, not foo itself.
+		// go-git matches the bare prefix, and upload would then skip the
+		// whole directory; adding the trailing segment restores git's
+		// semantics so negations inside foo stay reachable.
+		if strings.HasSuffix(line, "/**") {
+			line += "/*"
 		}
 		patterns = append(patterns, gitignore.ParsePattern(line, nil))
 	}

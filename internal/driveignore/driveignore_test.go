@@ -276,6 +276,98 @@ func TestCleanPruneIgnoredRemovesFilesExcludedByDriveignore(t *testing.T) {
 	assertNotExist(t, filepath.Join(out, "ignored.txt"))
 }
 
+func TestUploadFollowsSymlinkedInputRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	realSrc := t.TempDir()
+	write(t, filepath.Join(realSrc, ".driveignore"), "")
+	write(t, filepath.Join(realSrc, "keep.txt"), "keep")
+	src := filepath.Join(t.TempDir(), "src")
+	require.NoError(t, os.Symlink(realSrc, src))
+
+	out := t.TempDir()
+	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t)}))
+	assertLinked(t, filepath.Join(realSrc, "keep.txt"), filepath.Join(out, "keep.txt"))
+}
+
+func TestCleanFollowsSymlinkedDriveRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	src := t.TempDir()
+	write(t, filepath.Join(src, "keep.txt"), "keep")
+	realOut := t.TempDir()
+	write(t, filepath.Join(realOut, "legacy.txt"), "legacy")
+	out := filepath.Join(t.TempDir(), "out")
+	require.NoError(t, os.Symlink(realOut, out))
+
+	removed, err := Clean(Options{Input: src, Output: out})
+	require.NoError(t, err)
+	require.Equal(t, []string{"legacy.txt"}, removed)
+	assertNotExist(t, filepath.Join(realOut, "legacy.txt"))
+}
+
+func TestUploadForceKeepsExistingFileWhenLinkFails(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "same.txt"), "new")
+	write(t, filepath.Join(out, "same.txt"), "old")
+
+	boom := errors.New("link boom")
+	err := Upload(Options{
+		Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Force: true,
+		linkFn: func(string, string) error { return boom },
+	})
+	require.ErrorIs(t, err, boom)
+	require.Equal(t, "old", read(t, filepath.Join(out, "same.txt")), "a failed link must not destroy the existing file")
+
+	entries, err := os.ReadDir(out)
+	require.NoError(t, err)
+	for _, entry := range entries {
+		require.NotContains(t, entry.Name(), ".driveignore-", "temporary links must be cleaned up")
+	}
+}
+
+func TestUploadForceReplacesDanglingSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "foo.txt"), "new")
+	require.NoError(t, os.Symlink("missing-target", filepath.Join(out, "foo.txt")))
+
+	var notices bytes.Buffer
+	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Out: &notices}))
+	require.Contains(t, notices.String(), "foo.txt")
+	info, err := os.Lstat(filepath.Join(out, "foo.txt"))
+	require.NoError(t, err)
+	require.NotZero(t, info.Mode()&os.ModeSymlink)
+
+	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Force: true}))
+	assertLinked(t, filepath.Join(src, "foo.txt"), filepath.Join(out, "foo.txt"))
+}
+
+func TestUploadForceReplacesFileWithDirectory(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "d"), 0o755))
+	write(t, filepath.Join(out, "d"), "file")
+
+	var notices bytes.Buffer
+	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Out: &notices}))
+	require.Contains(t, notices.String(), "d")
+	info, err := os.Stat(filepath.Join(out, "d"))
+	require.NoError(t, err)
+	require.True(t, info.Mode().IsRegular(), "without --force the file must stay")
+
+	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Force: true}))
+	info, err = os.Stat(filepath.Join(out, "d"))
+	require.NoError(t, err)
+	require.True(t, info.IsDir(), "with --force the directory must replace the file")
+}
+
 func TestEnsureFileCreatesMissingFileAndKeepsExistingContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", ".global_driveignore")
 	require.NoError(t, EnsureFile(path))
