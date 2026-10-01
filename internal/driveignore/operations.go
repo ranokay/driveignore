@@ -66,17 +66,17 @@ func (o Options) logf(format string, args ...any) {
 	}
 }
 
-func (o Options) notice(rel string) {
+func (o Options) reportConflict(rel string) {
 	_, _ = fmt.Fprintf(o.out(), "cannot upload '%s'. A file with the same name already exists.\n", rel)
 }
 
 func (o Options) ignore() (Matcher, error) {
-	matcher, typ, err := LoadIgnore(o.GlobalIgnorePath, o.Input, o.MergeIgnores)
+	matcher, err := LoadIgnore(o.GlobalIgnorePath, o.Input, o.MergeIgnores)
+	if errors.Is(err, ErrNoIgnore) {
+		return nil, fmt.Errorf("no .driveignore found in %s or at %s", o.Input, o.GlobalIgnorePath)
+	}
 	if err != nil {
 		return nil, err
-	}
-	if typ == NoIgnore {
-		return nil, fmt.Errorf("no .driveignore found in %s or at %s", o.Input, o.GlobalIgnorePath)
 	}
 	return matcher, nil
 }
@@ -121,11 +121,11 @@ func Upload(o Options) error {
 			o.logf("skipped symlink: %s", filepath.ToSlash(rel))
 			return nil
 		}
-		if entry.IsDir() && matcher.Match(path, true) {
-			o.logf("skipped directory: %s", filepath.ToSlash(rel))
-			return filepath.SkipDir
-		}
-		if !entry.IsDir() && matcher.Match(path, false) {
+		if excluded, dir := skip(matcher, path, entry); excluded {
+			if dir {
+				o.logf("skipped directory: %s", filepath.ToSlash(rel))
+				return filepath.SkipDir
+			}
 			o.logf("skipped file: %s", filepath.ToSlash(rel))
 			return nil
 		}
@@ -174,7 +174,7 @@ func (o Options) reconcile(sourcePath, goalPath string, entry fs.DirEntry, goalI
 			return nil
 		}
 		if !o.Force {
-			o.notice(rel)
+			o.reportConflict(rel)
 			return nil
 		}
 		o.logf("replacing a file with a directory: %s", rel)
@@ -185,7 +185,7 @@ func (o Options) reconcile(sourcePath, goalPath string, entry fs.DirEntry, goalI
 	}
 	if goalInfo.IsDir() {
 		if !o.Force {
-			o.notice(rel)
+			o.reportConflict(rel)
 			return nil
 		}
 		return fmt.Errorf("cannot replace directory %s with a file; remove it manually", rel)
@@ -200,7 +200,7 @@ func (o Options) reconcile(sourcePath, goalPath string, entry fs.DirEntry, goalI
 		}
 	}
 	if !o.Force {
-		o.notice(rel)
+		o.reportConflict(rel)
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(goalPath), 0o755); err != nil {
@@ -244,11 +244,15 @@ func Clean(o Options) ([]string, error) {
 	}
 	var ignored Matcher
 	if o.PruneIgnored {
-		matcher, _, err := LoadIgnore(o.GlobalIgnorePath, o.Input, o.MergeIgnores)
-		if err != nil {
+		matcher, err := LoadIgnore(o.GlobalIgnorePath, o.Input, o.MergeIgnores)
+		switch {
+		case errors.Is(err, ErrNoIgnore):
+			// nothing is ignored without an ignore file
+		case err != nil:
 			return nil, err
+		default:
+			ignored = matcher
 		}
-		ignored = matcher
 	}
 	var removed []string
 	err = Walk(o.Output, func(path string, entry fs.DirEntry, rel string) error {
@@ -330,10 +334,10 @@ func Diff(o Options) (DiffResult, error) {
 		if entry.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
-		if entry.IsDir() && matcher.Match(path, true) {
-			return filepath.SkipDir
-		}
-		if !entry.IsDir() && matcher.Match(path, false) {
+		if excluded, dir := skip(matcher, path, entry); excluded {
+			if dir {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		same, err := sameEntry(o, entry, filepath.Join(o.Output, rel))

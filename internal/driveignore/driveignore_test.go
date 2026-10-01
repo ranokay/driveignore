@@ -64,6 +64,18 @@ func TestWalkVisitsEntriesInOrderWithoutSpecialPaths(t *testing.T) {
 	}
 }
 
+func TestWalkHandlesSpacesAndUnicode(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "spa ce", "ünïcode.txt"), "x")
+
+	var got []string
+	require.NoError(t, Walk(root, func(_ string, _ fs.DirEntry, rel string) error {
+		got = append(got, rel)
+		return nil
+	}))
+	require.Equal(t, []string{filepath.Join("spa ce"), filepath.Join("spa ce", "ünïcode.txt")}, got)
+}
+
 func TestWalkPropagatesRootErrors(t *testing.T) {
 	err := Walk(filepath.Join(t.TempDir(), "missing"), func(string, fs.DirEntry, string) error {
 		return nil
@@ -193,34 +205,30 @@ func TestLoadIgnoreSelectsLocalGlobalAndMerged(t *testing.T) {
 	write(t, global, "global-only.txt\n")
 
 	t.Run("local only", func(t *testing.T) {
-		matcher, typ, err := LoadIgnore(global, local, false)
+		matcher, err := LoadIgnore(global, local, false)
 		require.NoError(t, err)
-		require.Equal(t, LocalIgnore, typ)
 		require.True(t, matcher.Match(filepath.Join(local, "local-only.txt"), false))
 		require.False(t, matcher.Match(filepath.Join(local, "global-only.txt"), false))
 	})
 
 	t.Run("global only", func(t *testing.T) {
 		other := t.TempDir()
-		matcher, typ, err := LoadIgnore(global, other, false)
+		matcher, err := LoadIgnore(global, other, false)
 		require.NoError(t, err)
-		require.Equal(t, GlobalIgnore, typ)
 		require.True(t, matcher.Match(filepath.Join(other, "global-only.txt"), false))
 		require.False(t, matcher.Match(filepath.Join(other, "local-only.txt"), false))
 	})
 
 	t.Run("merged", func(t *testing.T) {
-		matcher, typ, err := LoadIgnore(global, local, true)
+		matcher, err := LoadIgnore(global, local, true)
 		require.NoError(t, err)
-		require.Equal(t, MergedIgnore, typ)
 		require.True(t, matcher.Match(filepath.Join(local, "local-only.txt"), false))
 		require.True(t, matcher.Match(filepath.Join(local, "global-only.txt"), false))
 	})
 
 	t.Run("none", func(t *testing.T) {
-		matcher, typ, err := LoadIgnore(missingGlobal(t), t.TempDir(), false)
-		require.NoError(t, err)
-		require.Equal(t, NoIgnore, typ)
+		matcher, err := LoadIgnore(missingGlobal(t), t.TempDir(), false)
+		require.ErrorIs(t, err, ErrNoIgnore)
 		require.Nil(t, matcher)
 	})
 }

@@ -32,19 +32,23 @@ func newGlobalCmd() *cobra.Command {
 		Long: `If you wish to have a global .driveignore you can set its contents here.
 You can later decide if you want to use global, local or merged .driveignore.`,
 		Example: "vim $(driveignore global)",
-		Args:    cobra.NoArgs,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := cobra.NoArgs(cmd, args); err != nil {
+				return usageError{err}
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := driveignore.GlobalIgnorePath()
 			if err != nil {
 				return err
 			}
-			if verbose {
-				if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), ".global_driveignore didnt exist, created a new one")
-				}
-			}
+			_, statErr := os.Stat(path)
 			if err := driveignore.EnsureFile(path); err != nil {
 				return err
+			}
+			if verbose && errors.Is(statErr, fs.ErrNotExist) {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), ".global_driveignore didnt exist, created a new one")
 			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), path)
 			return nil

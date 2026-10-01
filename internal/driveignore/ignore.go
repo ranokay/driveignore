@@ -11,19 +11,8 @@ import (
 	gitignore "github.com/go-git/go-git/v5/plumbing/format/gitignore"
 )
 
-// IgnoreType says which .driveignore files an operation loaded.
-type IgnoreType int
-
-const (
-	// NoIgnore means neither a local nor a global .driveignore exists.
-	NoIgnore IgnoreType = iota
-	// LocalIgnore means only the source directory's .driveignore applies.
-	LocalIgnore
-	// GlobalIgnore means only the global .driveignore applies.
-	GlobalIgnore
-	// MergedIgnore means both apply, with local patterns taking precedence.
-	MergedIgnore
-)
+// ErrNoIgnore reports that neither a local nor a global .driveignore exists.
+var ErrNoIgnore = errors.New("no .driveignore found")
 
 // Matcher reports whether a path (relative to or below the source directory)
 // is excluded by the loaded .driveignore files.
@@ -47,30 +36,31 @@ func (m pathMatcher) Match(path string, isDir bool) bool {
 // LoadIgnore resolves the .driveignore files that apply to localPath: the
 // local file at localPath/.driveignore and the global file at globalPath.
 // When merge is set and both files exist, global patterns are applied first
-// and local patterns override them.
-func LoadIgnore(globalPath, localPath string, merge bool) (Matcher, IgnoreType, error) {
+// and local patterns override them. ErrNoIgnore is returned when neither file
+// exists.
+func LoadIgnore(globalPath, localPath string, merge bool) (Matcher, error) {
 	localContent, localErr := os.ReadFile(filepath.Join(localPath, ".driveignore"))
 	if localErr != nil && !errors.Is(localErr, fs.ErrNotExist) {
-		return nil, NoIgnore, localErr
+		return nil, localErr
 	}
 	globalContent, globalErr := os.ReadFile(globalPath)
 	if globalErr != nil && !errors.Is(globalErr, fs.ErrNotExist) {
-		return nil, NoIgnore, globalErr
+		return nil, globalErr
 	}
 	localExists := localErr == nil
 	globalExists := globalErr == nil
 
 	switch {
 	case localExists && (!globalExists || !merge):
-		return newMatcher(localPath, localContent), LocalIgnore, nil
+		return newMatcher(localPath, localContent), nil
 	case globalExists && (!localExists || !merge):
-		return newMatcher(localPath, globalContent), GlobalIgnore, nil
+		return newMatcher(localPath, globalContent), nil
 	case localExists && globalExists:
 		merged := append(bytes.Clone(globalContent), '\n')
 		merged = append(merged, localContent...)
-		return newMatcher(localPath, merged), MergedIgnore, nil
+		return newMatcher(localPath, merged), nil
 	default:
-		return nil, NoIgnore, nil
+		return nil, ErrNoIgnore
 	}
 }
 

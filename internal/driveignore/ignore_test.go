@@ -27,9 +27,8 @@ func TestIgnoreMatchesGitignoreSemantics(t *testing.T) {
 	}, "\n") + "\n"
 	write(t, filepath.Join(local, ".driveignore"), patterns)
 
-	matcher, typ, err := LoadIgnore(missingGlobal(t), local, false)
+	matcher, err := LoadIgnore(missingGlobal(t), local, false)
 	require.NoError(t, err)
-	require.Equal(t, LocalIgnore, typ)
 
 	tests := []struct {
 		path  string
@@ -67,7 +66,7 @@ func TestIgnoreSkipsCommentsAndBlankLines(t *testing.T) {
 	local := t.TempDir()
 	write(t, filepath.Join(local, ".driveignore"), "# comment\n\n*.tmp\n\\#hashed.txt\n")
 
-	matcher, _, err := LoadIgnore(missingGlobal(t), local, false)
+	matcher, err := LoadIgnore(missingGlobal(t), local, false)
 	require.NoError(t, err)
 	require.True(t, matcher.Match(filepath.Join(local, "x.tmp"), false))
 	require.True(t, matcher.Match(filepath.Join(local, "#hashed.txt"), false))
@@ -79,7 +78,7 @@ func TestIgnoreHandlesLinesLongerThanScannerLimit(t *testing.T) {
 	long := strings.Repeat("x", 70_000)
 	write(t, filepath.Join(local, ".driveignore"), long+"\n*.tmp\n")
 
-	matcher, _, err := LoadIgnore(missingGlobal(t), local, false)
+	matcher, err := LoadIgnore(missingGlobal(t), local, false)
 	require.NoError(t, err)
 	require.True(t, matcher.Match(filepath.Join(local, "file.tmp"), false), "patterns after a long line must still apply")
 }

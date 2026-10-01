@@ -10,6 +10,9 @@ import (
 )
 
 func newOptions(cmd *cobra.Command, input, output string) (driveignore.Options, error) {
+	if err := requireDir(input); err != nil {
+		return driveignore.Options{}, err
+	}
 	globalPath, err := driveignore.GlobalIgnorePath()
 	if err != nil {
 		return driveignore.Options{}, err
@@ -35,13 +38,18 @@ func singleDirArg() cobra.PositionalArgs {
 		if err := cobra.ExactArgs(1)(cmd, args); err != nil {
 			return usageError{err}
 		}
-		info, err := os.Stat(args[0])
-		if err != nil {
-			return usageError{fmt.Errorf("cannot use %q: %w", args[0], err)}
-		}
-		if !info.IsDir() {
-			return usageError{fmt.Errorf("%q is not a directory", args[0])}
-		}
-		return nil
+		return requireDir(args[0])
 	}
+}
+
+// requireDir returns a usage error when path does not name a directory.
+func requireDir(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return usageError{fmt.Errorf("cannot use %q: %w", path, err)}
+	}
+	if !info.IsDir() {
+		return usageError{fmt.Errorf("%q is not a directory", path)}
+	}
+	return nil
 }

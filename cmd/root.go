@@ -49,23 +49,30 @@ meaning no files duplicates, and no repetitive cli calls.`,
 
 var verbose bool
 
-// Execute adds all child commands to the root command and sets flags appropriately.
+// Execute runs the CLI and exits with the resulting status code.
 func Execute() {
-	err := rootCmd.Execute()
+	os.Exit(execute())
+}
+
+// execute runs the root command and returns the process exit code: 0 on
+// success, 1 for runtime failures or `diff --exit-code` differences, and 2
+// for usage errors.
+func execute() int {
+	cmd, err := rootCmd.ExecuteC()
 	if err == nil {
-		return
+		return 0
 	}
 	var usage usageError
 	switch {
 	case errors.As(err, &usage):
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		fmt.Fprintln(os.Stderr, rootCmd.UsageString())
-		os.Exit(2)
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Error:", err)
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), cmd.UsageString())
+		return 2
 	case errors.Is(err, errDiffExit):
-		os.Exit(1)
+		return 1
 	default:
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Error:", err)
+		return 1
 	}
 }
 
