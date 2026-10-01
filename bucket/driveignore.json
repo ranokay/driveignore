@@ -1,19 +1,19 @@
 {
-    "version": "1.3.0",
+    "version": "1.3.1",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/ranokay/driveignore/releases/download/v1.3.0/driveignore_1.3.0_windows_amd64.zip",
+            "url": "https://github.com/ranokay/driveignore/releases/download/v1.3.1/driveignore_1.3.1_windows_amd64.zip",
             "bin": [
                 "driveignore.exe"
             ],
-            "hash": "c3c76254c6aae09134a5028b7dbf207cc15d2e34c798f04ed989e2c6e810218c"
+            "hash": "ba8dce3e3358058b23f174b64f12a538f6ff2402e6d83de09fb6401210c280bf"
         },
         "arm64": {
-            "url": "https://github.com/ranokay/driveignore/releases/download/v1.3.0/driveignore_1.3.0_windows_arm64.zip",
+            "url": "https://github.com/ranokay/driveignore/releases/download/v1.3.1/driveignore_1.3.1_windows_arm64.zip",
             "bin": [
                 "driveignore.exe"
             ],
-            "hash": "0f2bd3b55f8d25c41fb94833172eb30ce27185be7df4dee95a635bed234bb371"
+            "hash": "845e1166b936c5e0245cb0219e9f8aee1a8dd15071036c9f62c41c1b3553fc5c"
         }
     },
     "homepage": "https://github.com/ranokay/driveignore",
