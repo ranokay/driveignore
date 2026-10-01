@@ -1,0 +1,58 @@
+[tools]
+go = "1.27"
+golangci-lint = "2.14.0"
+hk = "2.4.0"
+goreleaser = "2.18.2"
+"go:golang.org/x/vuln/cmd/govulncheck" = "latest"
+
+[tasks.fmt]
+description = "Apply formatting"
+run = "golangci-lint fmt"
+
+[tasks."fmt:check"]
+description = "Check formatting"
+run = "golangci-lint fmt --diff"
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run"
+
+[tasks.test]
+description = "Run tests"
+run = "go test ./..."
+
+[tasks."test:race"]
+description = "Run tests with the race detector"
+run = "go test -race ./..."
+
+[tasks."test:cover"]
+description = "Run tests with coverage"
+run = "go test -cover ./..."
+
+[tasks.bench]
+description = "Run benchmarks"
+run = "go test -bench . -benchmem ./..."
+
+[tasks.build]
+description = "Build the binary into dist/"
+run = "go build -o dist/ ."
+
+[tasks.vuln]
+description = "Check dependencies for known vulnerabilities"
+run = "govulncheck ./..."
+
+[tasks.check]
+description = "Formatting, vet, lint and tests"
+depends = ["fmt:check", "vet", "lint", "test"]
+
+[tasks."hooks:install"]
+description = "Install git hooks via hk"
+run = "hk install --mise"
+
+[tasks."release:snapshot"]
+description = "Build release artifacts locally without publishing"
+run = "goreleaser release --snapshot --clean"

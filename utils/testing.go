@@ -40,7 +40,7 @@ func CatchOutput(f func()) (out string, err string) {
 	go func() {
 		var buffer bytes.Buffer
 		wg.Done()
-		io.Copy(&buffer, outReader)
+		_, _ = io.Copy(&buffer, outReader)
 		outs <- buffer.String()
 	}()
 	wg.Wait()
@@ -51,14 +51,14 @@ func CatchOutput(f func()) (out string, err string) {
 	go func() {
 		var buffer bytes.Buffer
 		wg.Done()
-		io.Copy(&buffer, errReader)
+		_, _ = io.Copy(&buffer, errReader)
 		errs <- buffer.String()
 	}()
 	wg.Wait()
 
 	f()
-	outWriter.Close()
-	errWriter.Close()
+	_ = outWriter.Close()
+	_ = errWriter.Close()
 	out = <-outs
 	err = <-errs
 	return

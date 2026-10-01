@@ -19,7 +19,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/shilangyu/driveignore/utils"
+	"github.com/ranokay/driveignore/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -39,7 +39,7 @@ remove files that do not exist in your source files.
 			sourcePath := filepath.Join(cleanInput, relativePath)
 			sourceStat, err := os.Stat(sourcePath)
 			if os.IsNotExist(err) || (!os.SameFile(info, sourceStat) && !info.IsDir()) {
-				os.Remove(currPath)
+				_ = os.Remove(currPath)
 				vPrint("Removed:", relativePath)
 			}
 			return nil
@@ -49,14 +49,14 @@ remove files that do not exist in your source files.
 	},
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) != 1 {
-			return errors.New("There should only be one argument")
+			return errors.New("there should only be one argument")
 		}
 		fstat, err := os.Stat(args[0])
 		if os.IsNotExist(err) {
-			return errors.New("Passed path doesnt exist")
+			return errors.New("passed path doesn't exist")
 		}
 		if !fstat.IsDir() {
-			return errors.New("Passed path isnt a directory")
+			return errors.New("passed path isn't a directory")
 		}
 		return nil
 	},

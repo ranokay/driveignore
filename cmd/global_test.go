@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/shilangyu/driveignore/utils"
+	"github.com/ranokay/driveignore/utils"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -64,5 +64,5 @@ func Test_globalRun(t *testing.T) {
 	})
 	req.Equal(p+"\n", out)
 
-	os.Remove(p)
+	_ = os.Remove(p)
 }

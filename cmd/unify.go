@@ -55,14 +55,14 @@ Its an alias for: 'driveignore upload [args] [flags] --force' + 'driveignore cle
 	},
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) != 1 {
-			return errors.New("There should only be one argument")
+			return errors.New("there should only be one argument")
 		}
 		fstat, err := os.Stat(args[0])
 		if os.IsNotExist(err) {
-			return errors.New("Passed path doesnt exist")
+			return errors.New("passed path doesn't exist")
 		}
 		if !fstat.IsDir() {
-			return errors.New("Passed path isnt a directory")
+			return errors.New("passed path isn't a directory")
 		}
 		return nil
 	},

@@ -17,13 +17,12 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
-	"github.com/shilangyu/driveignore/utils"
+	"github.com/ranokay/driveignore/utils"
 )
 
 // globalCmd represents the global command
@@ -38,7 +37,7 @@ You can later decide if you want to use global, local or merged .driveignore.`,
 }
 
 var (
-	errNoArg = errors.New("There should only be no arguments")
+	errNoArg = errors.New("there should only be no arguments")
 )
 
 func globalRun(globalDriveignorePath string) func(cmd *cobra.Command, args []string) error {
@@ -46,10 +45,11 @@ func globalRun(globalDriveignorePath string) func(cmd *cobra.Command, args []str
 		vPrint := utils.VPrintWrapper(verbose)
 
 		if _, err := os.Stat(globalDriveignorePath); os.IsNotExist(err) {
-			os.MkdirAll(filepath.Dir(globalDriveignorePath), os.ModePerm)
-			err := ioutil.WriteFile(globalDriveignorePath, []byte{}, os.ModePerm)
-			if err != nil {
-				return nil
+			if err := os.MkdirAll(filepath.Dir(globalDriveignorePath), os.ModePerm); err != nil {
+				return err
+			}
+			if err := os.WriteFile(globalDriveignorePath, []byte{}, os.ModePerm); err != nil {
+				return err
 			}
 			vPrint(".global_driveignore didnt exist, created a new one")
 		}

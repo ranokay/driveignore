@@ -1,65 +1,92 @@
 # driveignore
 
-[![](https://github.com/shilangyu/driveignore/workflows/ci/badge.svg)](https://github.com/shilangyu/driveignore/actions)
+[![ci](https://github.com/ranokay/driveignore/actions/workflows/ci.yml/badge.svg)](https://github.com/ranokay/driveignore/actions/workflows/ci.yml)
 
-This simple cli tools works **together with** the [google drive sync](https://www.google.com/drive/download/) allowing you to have .driveignore files. Driveignore uses hardlinks, meaning no files duplicates, no repetitive cli calls, and blazing fast 'upload' speeds.
+`driveignore` keeps parts of a folder out of Google Drive for desktop. It reads
+`.driveignore` files (same pattern syntax as `.gitignore`) and hardlinks the
+files that should sync into your Drive folder. No file copies, no repeated CLI
+runs: Google Drive sees changes through the links.
+
+This is a maintained fork of
+[shilangyu/driveignore](https://github.com/shilangyu/driveignore).
+
+## requirements
+
+- [Google Drive for desktop](https://www.google.com/drive/download/) on Windows
+  or macOS
+- the source folder and the Drive folder on the same filesystem — hardlinks
+  cannot cross volumes
 
 ## installing
 
-- grab an executable from the [release tab](https://github.com/shilangyu/driveignore/releases)
-- add it to `PATH`
-- install [google drive sync](https://www.google.com/drive/download/)
-
-or
-
-- install [golang](https://golang.org/dl/)
-- run the `go install github.com/shilangyu/driveignore@latest` command
-- install [google drive sync](https://www.google.com/drive/download/)
-
-Done! You will now have `driveignore` as a command in your terminal.
+- download the archive for your OS from the
+  [releases](https://github.com/ranokay/driveignore/releases) and put
+  `driveignore` on your `PATH`, or
+- `go install github.com/ranokay/driveignore@latest` (Go 1.27 or newer), or
+- build from source with [mise](https://mise.jdx.dev/): `mise run build` writes
+  the binary to `dist/`
 
 ## how to use
 
-You can get all the help about each command by using the `--help` (`-h`) flag.
+1. Create an empty folder and add it to Google Drive for desktop's mirror list.
+2. Create a `.driveignore` in the root of the folder you want to sync.
+3. Run `driveignore unify [path to your Drive folder]` from the source folder.
 
-- Create an empty folder and add it to the google drive watch list
-- Create a `.driveignore` the same way you would a `.gitignore` in the root of a directory you wish to sync
-- run `driveignore upload [path to your folder from step 1]`. The current working directory will be cloned to the drive folder with respect to the `.driveignore` blacklist
-
-And you're done! Google drive will take care of the rest, which is syncing the files to the cloud. Once a file has been uploaded through `driveignore upload` you wont have to upload it again, google drive will listen to changes because the 'uploaded' files are hardlinks.
-
-## global vs local .driveignore
-
-You can create a global `.driveignore` using the `driveignore global` (it will print the path to it), that way if you want to upload a directory without a `.driveignore` the global one will be used. You can also force a merge of local and global `.driveignore` during upload using the `--mergeIgnores` flag.
-
-## help output
+The current directory is mirrored into the Drive folder with the `.driveignore`
+applied. Because the mirrored files are hardlinks, editing either copy updates
+both and Google Drive handles the rest.
 
 ```
-This simple cli allows you to have .driveignore(s)
-It will look for a .driveignore, ignore the specified files
-and make a hard link of your files to your drivesync folder
-meaning no files duplicates, and no repetitive cli calls.
-
 Usage:
   driveignore [command]
 
-Available Commands:
-  clean       Cleans your drive sync folder from old files
-  diff        Compares your directory with the drive one
-  global      Get the path to your global .driveignore
-  help        Help about any command
-  unify       Unifies 2 directories where input is the source
-  upload      Upload a directory to your drive folder
+Commands:
+  clean    cleans the drive folder from files that no longer exist in the source
+  diff     compares the source with the drive folder
+  global   prints the path to the global .driveignore
+  unify    uploads the source and removes legacy files in one go
+  upload   hardlinks the source into the drive folder
 
 Flags:
+      --verbose   print what is happening
   -h, --help      help for driveignore
-      --verbose   Prints out whats happening
-
-Use "driveignore [command] --help" for more information about a command.
 ```
 
-## linux? 😢
+Every command documents its flags in `--help`. The shared flags are:
 
-There is no drive sync for linux:
+- `-i, --input` (default `.`): source directory for `upload`, `diff`, `unify`
+- `-M, --merge-ignores`: merge the global and the local `.driveignore`
+- `--force` (`upload` only): overwrite a drive file whose name collides with a
+  source file
 
-> There is no Drive app for Linux at this time. Please use Drive on the web and on your mobile devices.
+## global .driveignore
+
+`driveignore global` prints the path to a global `.driveignore` (creating it if
+needed). Uploads from a directory without its own `.driveignore` use the global
+one; pass `--merge-ignores` to combine both.
+
+## ignore patterns
+
+Patterns follow the same rules as `.gitignore`: `*`, `?`, `**`, `!` negation,
+leading `/` anchoring and trailing `/` for directory-only matches.
+
+## platform support
+
+- Windows amd64, Windows arm64
+- macOS amd64, macOS arm64
+- Linux amd64, Linux arm64 (no official Google Drive client; useful with mounted
+  drives, best-effort)
+
+## development
+
+```sh
+mise install        # install the pinned Go toolchain and tools
+mise run check      # formatting, vet, lint and tests
+mise run test:race  # tests with the race detector
+mise run bench      # benchmarks
+```
+
+## license
+
+Apache-2.0. Originally written by Marcin Wojnarowski, later maintained by
+[shilangyu](https://github.com/shilangyu); this fork continues the project.
