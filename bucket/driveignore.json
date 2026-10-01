@@ -1,30 +1,22 @@
 {
-    "version": "1.2.0",
-    "description": "Hardlink files into Google Drive while honoring .driveignore",
-    "homepage": "https://github.com/ranokay/driveignore",
-    "license": "Apache-2.0",
+    "version": "1.3.0",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/ranokay/driveignore/releases/download/v1.2.0/driveignore_1.2.0_windows_amd64.zip",
-            "hash": "4eb99236f1b680de566d7cd1de9ff4b0eb53a25ee728485d2b7f087fcedee7a5"
+            "url": "https://github.com/ranokay/driveignore/releases/download/v1.3.0/driveignore_1.3.0_windows_amd64.zip",
+            "bin": [
+                "driveignore.exe"
+            ],
+            "hash": "3f900c27f23335e24c7aa3b53283e37f3ff53808b5eecf10a6531f3a23db10e3"
         },
         "arm64": {
-            "url": "https://github.com/ranokay/driveignore/releases/download/v1.2.0/driveignore_1.2.0_windows_arm64.zip",
-            "hash": "27cf1f4b75fafcdcaecd21aad3c57b50712d882e25188003efc090532be2d1cf"
+            "url": "https://github.com/ranokay/driveignore/releases/download/v1.3.0/driveignore_1.3.0_windows_arm64.zip",
+            "bin": [
+                "driveignore.exe"
+            ],
+            "hash": "4c1d00b53488d470749a00758b6de253b20472d81966fa7be56981cc9c20bc93"
         }
     },
-    "bin": "driveignore.exe",
-    "checkver": {
-        "github": "https://github.com/ranokay/driveignore"
-    },
-    "autoupdate": {
-        "architecture": {
-            "64bit": {
-                "url": "https://github.com/ranokay/driveignore/releases/download/v$version/driveignore_$version_windows_amd64.zip"
-            },
-            "arm64": {
-                "url": "https://github.com/ranokay/driveignore/releases/download/v$version/driveignore_$version_windows_arm64.zip"
-            }
-        }
-    }
+    "homepage": "https://github.com/ranokay/driveignore",
+    "license": "Apache-2.0",
+    "description": "Hardlink files into Google Drive while honoring .driveignore"
 }
