@@ -426,6 +426,20 @@ func TestUnifyCopyReplacesChangedSource(t *testing.T) {
 	require.Equal(t, "two-longer", read(t, filepath.Join(out, "keep.txt")))
 }
 
+func TestUnifyCopyReplacesSameSizeEditImmediately(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "keep.txt"), "one")
+	opts := Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true}
+
+	require.NoError(t, Unify(opts))
+	// A same-size edit made within the timestamp tolerance must still be
+	// detected (racy timestamps are resolved by comparing content).
+	write(t, filepath.Join(src, "keep.txt"), "two")
+	require.NoError(t, Unify(opts))
+	require.Equal(t, "two", read(t, filepath.Join(out, "keep.txt")))
+}
+
 func TestCleanKeepsInSyncCopiesAndRemovesStaleOnes(t *testing.T) {
 	src, out := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(src, ".driveignore"), "")

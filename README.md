@@ -62,9 +62,9 @@ Every command documents its flags in `--help`. The shared flags are:
 - `--prune-ignored` (`clean`, `unify`): also remove drive files excluded by
   `.driveignore`, even when the source still contains them
 - `--copy` (`upload`, `unify`): copy files instead of hardlinking them, for
-  filesystems without hardlink support. `clean` and `diff` treat equal size
-  and modification time as in sync, so copies are kept and refreshed like
-  links are.
+  filesystems without hardlink support. `clean` and `diff` treat files with
+  equal size and modification time as in sync (recent timestamps are verified
+  by content), so copies are kept and refreshed like links are.
 - `--exit-code` (`diff` only): exit with status 1 when differences exist
 - `--version`: print the version and exit
 
