@@ -76,6 +76,10 @@ func Upload(o Options) error {
 		return err
 	}
 	return Walk(o.Input, func(path string, entry fs.DirEntry, rel string) error {
+		if entry.Type()&fs.ModeSymlink != 0 {
+			o.logf("skipped symlink: %s", filepath.ToSlash(rel))
+			return nil
+		}
 		if entry.IsDir() && matcher.Match(path, true) {
 			o.logf("skipped directory: %s", filepath.ToSlash(rel))
 			return filepath.SkipDir
@@ -139,6 +143,9 @@ func Upload(o Options) error {
 func Clean(o Options) ([]string, error) {
 	var removed []string
 	err := Walk(o.Output, func(path string, entry fs.DirEntry, rel string) error {
+		if entry.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
 		if entry.IsDir() {
 			return nil
 		}
@@ -199,6 +206,9 @@ func Diff(o Options) (DiffResult, error) {
 	}
 	var res DiffResult
 	err = Walk(o.Input, func(path string, entry fs.DirEntry, rel string) error {
+		if entry.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
 		if entry.IsDir() && matcher.Match(path, true) {
 			return filepath.SkipDir
 		}
@@ -218,6 +228,9 @@ func Diff(o Options) (DiffResult, error) {
 		return res, err
 	}
 	err = Walk(o.Output, func(_ string, entry fs.DirEntry, rel string) error {
+		if entry.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
 		same, err := sameEntry(o, entry, filepath.Join(o.Input, rel))
 		if err != nil {
 			return err

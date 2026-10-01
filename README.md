@@ -70,6 +70,9 @@ one; pass `--merge-ignores` to combine both.
 Patterns follow the same rules as `.gitignore`: `*`, `?`, `**`, `!` negation,
 leading `/` anchoring and trailing `/` for directory-only matches.
 
+Symlinks are skipped: they are neither uploaded nor followed, and `clean`
+leaves symlinks inside the drive folder untouched.
+
 ## platform support
 
 - Windows amd64, Windows arm64
