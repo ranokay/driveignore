@@ -25,6 +25,7 @@ func newDiffCmd() *cobra.Command {
 	var (
 		input        string
 		mergeIgnores bool
+		exitCode     bool
 	)
 	cmd := &cobra.Command{
 		Use:   "diff [drive sync folder path]",
@@ -33,7 +34,10 @@ func newDiffCmd() *cobra.Command {
 drive sync folder ([drive sync folder path])
 
 Red    - your drive sync folder is missing a file
-Yellow - your drive sync folder has a file that doesnt exist in input
+Yellow - your drive sync folder has a file that doesn't exist in input
+
+With --exit-code, diff exits 1 when differences exist and 0 otherwise,
+without printing an error.
 `,
 		Args: singleDirArg(),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -54,11 +58,15 @@ Yellow - your drive sync folder has a file that doesnt exist in input
 			for _, old := range res.Old {
 				yellowPrint(cmd.OutOrStdout(), old)
 			}
+			if exitCode && (len(res.Missing) > 0 || len(res.Old) > 0) {
+				return errDiffExit
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&input, "input", "i", ".", "Input directory of the files to be compared")
-	cmd.Flags().BoolVarP(&mergeIgnores, "merge-ignores", "M", false, "Merges global and input dir .driveignore")
+	cmd.Flags().BoolVarP(&mergeIgnores, "merge-ignores", "M", false, "Merges the global and the input directory's .driveignore")
+	cmd.Flags().BoolVar(&exitCode, "exit-code", false, "Exit with status 1 when differences exist")
 	return cmd
 }
 

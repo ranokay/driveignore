@@ -24,6 +24,7 @@ func newUnifyCmd() *cobra.Command {
 	var (
 		input        string
 		mergeIgnores bool
+		pruneIgnored bool
 	)
 	cmd := &cobra.Command{
 		Use:   "unify [output path]",
@@ -31,7 +32,9 @@ func newUnifyCmd() *cobra.Command {
 		Long: `Uploads all files (with respect to .driveignores)
 as well as removes legacy files from the drive sync folder.
 
-It is an alias for: 'driveignore upload [args] [flags] --force' + 'driveignore clean [args] [flags]'`,
+It is an alias for: 'driveignore upload [args] [flags] --force' + 'driveignore clean [args] [flags]'
+With --prune-ignored, it also removes files excluded by .driveignore,
+even when they exist in the source.`,
 		Args: singleDirArg(),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts, err := newOptions(cmd, input, args[0])
@@ -39,11 +42,13 @@ It is an alias for: 'driveignore upload [args] [flags] --force' + 'driveignore c
 				return err
 			}
 			opts.MergeIgnores = mergeIgnores
+			opts.PruneIgnored = pruneIgnored
 			return driveignore.Unify(opts)
 		},
 	}
 	cmd.Flags().StringVarP(&input, "input", "i", ".", "Input directory of the files to be uploaded")
-	cmd.Flags().BoolVarP(&mergeIgnores, "merge-ignores", "M", false, "Merges global and input dir .driveignore")
+	cmd.Flags().BoolVarP(&mergeIgnores, "merge-ignores", "M", false, "Merges the global and the input directory's .driveignore")
+	cmd.Flags().BoolVar(&pruneIgnored, "prune-ignored", false, "Remove files excluded by .driveignore even when they exist in the source")
 	return cmd
 }
 

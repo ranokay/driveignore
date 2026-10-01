@@ -20,6 +20,11 @@ type Options struct {
 	GlobalIgnorePath string
 	MergeIgnores     bool
 	Force            bool
+	// DryRun makes Clean report its removals without deleting anything.
+	DryRun bool
+	// PruneIgnored makes Clean remove drive files that the ignore rules
+	// exclude even when the source still contains them.
+	PruneIgnored bool
 
 	// Out receives user-facing notices. Defaults to io.Discard.
 	Out io.Writer
@@ -139,8 +144,17 @@ func Upload(o Options) error {
 // Clean removes files from Output whose source counterpart is missing or is a
 // different file. Directories are left in place. Stat errors other than
 // not-exist abort the walk instead of being treated as missing files, so a
-// transient error can never delete data.
+// transient error can never delete data. With PruneIgnored, files that the
+// ignore rules exclude are removed as well; DryRun reports without removing.
 func Clean(o Options) ([]string, error) {
+	var ignored Matcher
+	if o.PruneIgnored {
+		matcher, _, err := LoadIgnore(o.GlobalIgnorePath, o.Input, o.MergeIgnores)
+		if err != nil {
+			return nil, err
+		}
+		ignored = matcher
+	}
 	var removed []string
 	err := Walk(o.Output, func(path string, entry fs.DirEntry, rel string) error {
 		if entry.Type()&fs.ModeSymlink != 0 {
@@ -159,15 +173,23 @@ func Clean(o Options) ([]string, error) {
 			if err != nil {
 				return err
 			}
-			if os.SameFile(entryInfo, sourceInfo) {
+			sameFile := os.SameFile(entryInfo, sourceInfo)
+			pruned := ignored != nil && ignored.Match(sourcePath, false)
+			if sameFile && !pruned {
 				return nil
 			}
 		}
-		if err := os.Remove(path); err != nil {
-			return fmt.Errorf("remove %s: %w", filepath.ToSlash(rel), err)
+		if !o.DryRun {
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("remove %s: %w", filepath.ToSlash(rel), err)
+			}
 		}
 		removed = append(removed, filepath.ToSlash(rel))
-		o.logf("removed: %s", filepath.ToSlash(rel))
+		if o.DryRun {
+			o.logf("would remove: %s", filepath.ToSlash(rel))
+		} else {
+			o.logf("removed: %s", filepath.ToSlash(rel))
+		}
 		return nil
 	})
 	return removed, err

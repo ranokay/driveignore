@@ -29,8 +29,8 @@ func newUploadCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "upload [output path]",
 		Short: "Upload a directory to your drive folder",
-		Long: `Uploads files from the input directory (can be overwritten with --input flag) to a drive folder
-It will ignore files that satisfy the .driveignore
+		Long: `Uploads files from the input directory (--input flag) into a drive folder.
+Files that satisfy the .driveignore are skipped.
 The order of importance of a .driveignore file:
 current folder > global config
 `,
@@ -47,7 +47,7 @@ current folder > global config
 	}
 	cmd.Flags().StringVarP(&input, "input", "i", ".", "Input directory of the files to be uploaded")
 	cmd.Flags().BoolVarP(&mergeIgnores, "merge-ignores", "M", false, "Merges global and input dir .driveignore")
-	cmd.Flags().BoolVar(&force, "force", false, "Forces the upload even if warnings pop up")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing files with the same name")
 	return cmd
 }
 

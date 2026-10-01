@@ -247,6 +247,35 @@ func TestUploadAndCleanLeaveSymlinksAlone(t *testing.T) {
 	require.NoError(t, err, "clean must not remove symlinks from the drive folder")
 }
 
+func TestCleanDryRunReportsWithoutRemoving(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, "keep.txt"), "keep")
+	write(t, filepath.Join(out, "legacy.txt"), "legacy")
+
+	removed, err := Clean(Options{Input: src, Output: out, DryRun: true})
+	require.NoError(t, err)
+	require.Equal(t, []string{"legacy.txt"}, removed)
+	require.Equal(t, "legacy", read(t, filepath.Join(out, "legacy.txt")), "dry-run must not remove anything")
+}
+
+func TestCleanPruneIgnoredRemovesFilesExcludedByDriveignore(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "ignored.txt\n")
+	write(t, filepath.Join(src, "ignored.txt"), "ignored")
+	require.NoError(t, os.Link(filepath.Join(src, "ignored.txt"), filepath.Join(out, "ignored.txt")))
+
+	// Without pruning the linked drive copy stays: its source still exists.
+	removed, err := Clean(Options{Input: src, Output: out})
+	require.NoError(t, err)
+	require.Empty(t, removed)
+	require.FileExists(t, filepath.Join(out, "ignored.txt"))
+
+	removed, err = Clean(Options{Input: src, Output: out, PruneIgnored: true, GlobalIgnorePath: missingGlobal(t)})
+	require.NoError(t, err)
+	require.Equal(t, []string{"ignored.txt"}, removed)
+	assertNotExist(t, filepath.Join(out, "ignored.txt"))
+}
+
 func TestEnsureFileCreatesMissingFileAndKeepsExistingContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", ".global_driveignore")
 	require.NoError(t, EnsureFile(path))
