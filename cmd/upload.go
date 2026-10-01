@@ -25,6 +25,7 @@ func newUploadCmd() *cobra.Command {
 		input        string
 		mergeIgnores bool
 		force        bool
+		copyFiles    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "upload [output path]",
@@ -42,12 +43,14 @@ current folder > global config
 			}
 			opts.MergeIgnores = mergeIgnores
 			opts.Force = force
+			opts.Copy = copyFiles
 			return driveignore.Upload(opts)
 		},
 	}
 	cmd.Flags().StringVarP(&input, "input", "i", ".", "Input directory of the files to be uploaded")
 	cmd.Flags().BoolVarP(&mergeIgnores, "merge-ignores", "M", false, "Merges global and input dir .driveignore")
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing files with the same name")
+	cmd.Flags().BoolVar(&copyFiles, "copy", false, "Copy files instead of hardlinking them (for filesystems without hardlink support)")
 	return cmd
 }
 

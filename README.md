@@ -61,6 +61,10 @@ Every command documents its flags in `--help`. The shared flags are:
   removing them
 - `--prune-ignored` (`clean`, `unify`): also remove drive files excluded by
   `.driveignore`, even when the source still contains them
+- `--copy` (`upload`, `unify`): copy files instead of hardlinking them, for
+  filesystems without hardlink support. `clean` and `diff` treat files with
+  equal size and modification time as in sync (recent timestamps are verified
+  by content), so copies are kept and refreshed like links are.
 - `--exit-code` (`diff` only): exit with status 1 when differences exist
 - `--version`: print the version and exit
 
@@ -81,6 +85,18 @@ deeper files override shallower ones — the same way `.gitignore` works.
 
 Symlinks are skipped: they are neither uploaded nor followed, and `clean`
 leaves symlinks inside the drive folder untouched.
+
+## hardlinks and copies
+
+By default `upload` and `unify` hardlink files. Nothing is duplicated and
+edits on either side stay in sync through Google Drive, but the source and the
+drive folder must be on the same filesystem.
+
+If hardlinks are not supported (virtual drives, FAT/exFAT, network shares),
+pass `--copy`: files are copied, preserving permissions and modification
+times, and later runs replace stale copies only. Copy mode is a one-way
+mirror — changes made in the drive folder are overwritten by the next
+`unify`.
 
 ## platform support
 

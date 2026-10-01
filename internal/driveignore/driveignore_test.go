@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -374,6 +375,116 @@ func TestUploadForceReplacesFileWithDirectory(t *testing.T) {
 	info, err = os.Stat(filepath.Join(out, "d"))
 	require.NoError(t, err)
 	require.True(t, info.IsDir(), "with --force the directory must replace the file")
+}
+
+func TestUploadCopyCreatesIndependentCopies(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "keep.txt"), "keep")
+
+	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true}))
+
+	outPath := filepath.Join(out, "keep.txt")
+	srcInfo, err := os.Stat(filepath.Join(src, "keep.txt"))
+	require.NoError(t, err)
+	outInfo, err := os.Stat(outPath)
+	require.NoError(t, err)
+	require.False(t, os.SameFile(srcInfo, outInfo), "copy mode must not hardlink")
+	require.Equal(t, "keep", read(t, outPath))
+	require.True(t, srcInfo.ModTime().Equal(outInfo.ModTime()), "modification time is preserved for later comparisons")
+	if runtime.GOOS != "windows" {
+		require.Equal(t, srcInfo.Mode().Perm(), outInfo.Mode().Perm())
+	}
+}
+
+func TestUploadCopyIsIdempotent(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "keep.txt"), "keep")
+	opts := Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true}
+
+	require.NoError(t, Upload(opts))
+	before, err := os.Stat(filepath.Join(out, "keep.txt"))
+	require.NoError(t, err)
+	require.NoError(t, Upload(opts))
+	after, err := os.Stat(filepath.Join(out, "keep.txt"))
+	require.NoError(t, err)
+	require.True(t, os.SameFile(before, after), "an in-sync copy must not be rewritten")
+}
+
+func TestUnifyCopyReplacesChangedSource(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "keep.txt"), "one")
+	opts := Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true}
+
+	require.NoError(t, Unify(opts))
+	require.Equal(t, "one", read(t, filepath.Join(out, "keep.txt")))
+
+	write(t, filepath.Join(src, "keep.txt"), "two-longer")
+	require.NoError(t, Unify(opts))
+	require.Equal(t, "two-longer", read(t, filepath.Join(out, "keep.txt")))
+}
+
+func TestUnifyCopyReplacesSameSizeEditImmediately(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "keep.txt"), "one")
+	opts := Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true}
+
+	require.NoError(t, Unify(opts))
+	// A same-size edit made within the timestamp tolerance must still be
+	// detected (racy timestamps are resolved by comparing content).
+	write(t, filepath.Join(src, "keep.txt"), "two")
+	require.NoError(t, Unify(opts))
+	require.Equal(t, "two", read(t, filepath.Join(out, "keep.txt")))
+}
+
+func TestCleanKeepsInSyncCopiesAndRemovesStaleOnes(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "keep.txt"), "keep")
+	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true}))
+
+	removed, err := Clean(Options{Input: src, Output: out})
+	require.NoError(t, err)
+	require.Empty(t, removed, "an in-sync copy must be kept")
+
+	// Same size, changed content and a future timestamp: stale.
+	write(t, filepath.Join(src, "keep.txt"), "KEEP")
+	future := time.Now().Add(time.Hour)
+	require.NoError(t, os.Chtimes(filepath.Join(src, "keep.txt"), future, future))
+	removed, err = Clean(Options{Input: src, Output: out})
+	require.NoError(t, err)
+	require.Equal(t, []string{"keep.txt"}, removed)
+	assertNotExist(t, filepath.Join(out, "keep.txt"))
+}
+
+func TestDiffTreatsCopiesAsInSync(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "keep.txt"), "keep")
+	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true}))
+
+	res, err := Diff(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t)})
+	require.NoError(t, err)
+	require.Empty(t, res.Missing)
+	require.Empty(t, res.Old)
+}
+
+func TestUploadCopyFailureKeepsExistingFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits do not block reads on Windows")
+	}
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "same.txt"), "new-content")
+	write(t, filepath.Join(out, "same.txt"), "old")
+	require.NoError(t, os.Chmod(filepath.Join(src, "same.txt"), 0o000))
+
+	err := Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true, Force: true})
+	require.Error(t, err)
+	require.Equal(t, "old", read(t, filepath.Join(out, "same.txt")), "a failed copy must not destroy the existing file")
 }
 
 func TestEnsureFileCreatesMissingFileAndKeepsExistingContent(t *testing.T) {
