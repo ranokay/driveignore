@@ -73,6 +73,44 @@ func TestIgnoreSkipsCommentsAndBlankLines(t *testing.T) {
 	require.False(t, matcher.Match(filepath.Join(local, "comment"), false))
 }
 
+func TestNestedDriveignoreAppliesToItsSubtree(t *testing.T) {
+	local := t.TempDir()
+	write(t, filepath.Join(local, ".driveignore"), "*.log\n")
+	write(t, filepath.Join(local, "sub", ".driveignore"), "build/\n!keep.log\n")
+
+	matcher, err := LoadIgnore(missingGlobal(t), local, false)
+	require.NoError(t, err)
+
+	require.True(t, matcher.Match(filepath.Join(local, "app.log"), false), "root rule applies at the root")
+	require.True(t, matcher.Match(filepath.Join(local, "sub", "app.log"), false), "root rule applies below")
+	require.False(t, matcher.Match(filepath.Join(local, "sub", "keep.log"), false), "nested negation overrides the root rule")
+	require.True(t, matcher.Match(filepath.Join(local, "keep.log"), false), "negation lives only in the subtree")
+	require.True(t, matcher.Match(filepath.Join(local, "sub", "build"), true), "nested directory rule applies below")
+	require.False(t, matcher.Match(filepath.Join(local, "build"), true), "nested directory rule is anchored to its subtree")
+}
+
+func TestNestedDriveignoreAnchoredPatterns(t *testing.T) {
+	local := t.TempDir()
+	write(t, filepath.Join(local, "sub", ".driveignore"), "/rooted.txt\n")
+
+	matcher, err := LoadIgnore(missingGlobal(t), local, false)
+	require.NoError(t, err)
+
+	require.True(t, matcher.Match(filepath.Join(local, "sub", "rooted.txt"), false))
+	require.False(t, matcher.Match(filepath.Join(local, "sub", "deep", "rooted.txt"), false))
+	require.False(t, matcher.Match(filepath.Join(local, "rooted.txt"), false))
+}
+
+func TestLoadIgnoreAcceptsNestedOnlyConfiguration(t *testing.T) {
+	local := t.TempDir()
+	write(t, filepath.Join(local, "sub", ".driveignore"), "*.tmp\n")
+
+	matcher, err := LoadIgnore(missingGlobal(t), local, false)
+	require.NoError(t, err)
+	require.True(t, matcher.Match(filepath.Join(local, "sub", "x.tmp"), false))
+	require.False(t, matcher.Match(filepath.Join(local, "x.tmp"), false))
+}
+
 func TestIgnoreHandlesLinesLongerThanScannerLimit(t *testing.T) {
 	local := t.TempDir()
 	long := strings.Repeat("x", 70_000)

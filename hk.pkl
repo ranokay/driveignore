@@ -7,6 +7,11 @@ steps {
     ["go-fmt"] = Builtins.go_fmt
     ["golangci-lint"] = Builtins.golangci_lint
     ["gomod-tidy"] = Builtins.gomod_tidy
-    ["actionlint"] = Builtins.actionlint
+    // shellcheck is a separate step where available; actionlint's built-in
+    // shellcheck integration is disabled because it resolves the executable
+    // through mise shims, which are not reliable in hook environments.
+    ["actionlint"] = (Builtins.actionlint) {
+        check = "actionlint -shellcheck= {{ files }}"
+    }
     ["pinact"] = Builtins.pinact
 }
