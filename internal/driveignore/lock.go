@@ -1,10 +1,15 @@
 package driveignore
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 )
+
+// errLockUnsupported marks platforms with no pair-lock primitive. Locking
+// fails closed there: the caller must error out rather than run unlocked.
+var errLockUnsupported = errors.New("pair locking is unsupported on this platform")
 
 // AcquireLock takes an exclusive, non-blocking lock on path, the per-pair
 // artifact WatchLockPath names. While another process holds it the error
@@ -21,6 +26,9 @@ func AcquireLock(path string) (release func() error, err error) {
 	}
 	if err := tryLock(f); err != nil {
 		_ = f.Close()
+		if errors.Is(err, errLockUnsupported) {
+			return nil, fmt.Errorf("cannot lock pair %s: %w", path, err)
+		}
 		return nil, fmt.Errorf("another driveignore run holds the pair lock %s: %w", path, err)
 	}
 	return func() error {
