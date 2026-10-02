@@ -62,7 +62,7 @@ func resetWatchFlags(t *testing.T) {
 	t.Helper()
 	watch, _, err := rootCmd.Find([]string{"watch"})
 	require.NoError(t, err)
-	for _, name := range []string{"once", "dry-run", "one-way", "interval", "input"} {
+	for _, name := range []string{"once", "dry-run", "one-way", "install", "uninstall", "interval", "input"} {
 		flag := watch.Flags().Lookup(name)
 		require.NotNil(t, flag)
 		require.NoError(t, flag.Value.Set(flag.DefValue))

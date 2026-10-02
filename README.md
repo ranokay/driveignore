@@ -109,6 +109,8 @@ Every command documents its flags in `--help`. The shared flags are:
   changing anything
 - `--once`, `--one-way`, `--interval` (`watch`): run a single pass, make the
   source authoritative, or set the base poll interval
+- `--install`, `--uninstall` (`watch`, macOS only): install or remove the
+  launchd agent that keeps the pair reconciled from login
 - `--prune-ignored` (`clean`, `unify`): also remove drive files excluded by
   `.driveignore`, even when the source still contains them
 - `--copy` (`upload`, `unify`): copy files instead of hardlinking them, for
@@ -144,6 +146,20 @@ do without changing anything, and `--one-way` to make the source authoritative.
 Passes run `--interval` apart (2 seconds by default) while changes keep
 flowing, and back off towards 60 seconds while idle or after a failure; a pass
 that acted returns to the base.
+
+### running the watcher at login (macOS)
+
+`--install` writes a launchd agent for the pair and loads it, so the watcher
+starts at login and is restarted whenever it exits:
+
+```sh
+driveignore watch "/path/to/your drive folder" -i "/path/to/source" --install
+```
+
+The agent runs the same binary that invoked the command and logs stdout and
+stderr to `~/Library/Logs/driveignore/watch-<pair>.log`, one file per pair.
+`--uninstall` unloads the agent and removes it; the logs stay. Both flags are
+macOS-only.
 
 ## global .driveignore
 

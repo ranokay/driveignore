@@ -22,11 +22,13 @@ const (
 
 func newWatchCmd() *cobra.Command {
 	var (
-		input    string
-		once     bool
-		dryRun   bool
-		oneWay   bool
-		interval time.Duration
+		input     string
+		once      bool
+		dryRun    bool
+		oneWay    bool
+		install   bool
+		uninstall bool
+		interval  time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "watch [drive folder]",
@@ -41,6 +43,9 @@ instead of being guessed away. Run --once for a single pass, or --dry-run to
 print what a pass would do without changing anything.`,
 		Args: singleDirArg(),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if install || uninstall {
+				return runWatchAgent(cmd, input, args[0], install, uninstall)
+			}
 			if interval <= 0 || interval > watchMaxInterval {
 				return usageError{fmt.Errorf("--interval must be greater than 0s and at most %s, got %s", watchMaxInterval, interval)}
 			}
@@ -78,6 +83,8 @@ print what a pass would do without changing anything.`,
 	cmd.Flags().BoolVar(&once, "once", false, "Run a single reconcile pass and exit")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the actions a pass would take without changing anything")
 	cmd.Flags().BoolVar(&oneWay, "one-way", false, "Only propagate local changes; the source tree is authoritative")
+	cmd.Flags().BoolVar(&install, "install", false, "Install the pair as a launchd agent (macOS only)")
+	cmd.Flags().BoolVar(&uninstall, "uninstall", false, "Uninstall the pair's launchd agent (macOS only)")
 	cmd.Flags().DurationVar(&interval, "interval", watchBaseInterval, "Base time between passes while changes flow (idle backs off to 60s)")
 	return cmd
 }
