@@ -590,6 +590,34 @@ func TestCleanKeepsInSyncCopiesAndRemovesStaleOnes(t *testing.T) {
 	assertNotExist(t, filepath.Join(out, "keep.txt"))
 }
 
+// unreadableCopy uploads a copied file, keeps the content comparison in its
+// racy-timestamp branch, and makes the source unreadable.
+func unreadableCopy(t *testing.T) Config {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits do not block reads on Windows")
+	}
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "keep.txt"), "keep")
+	cfg := baseConfig(t, src, out)
+	runUpload(t, cfg, UploadOptions{Copy: true})
+
+	now := time.Now()
+	require.NoError(t, os.Chtimes(filepath.Join(src, "keep.txt"), now, now))
+	require.NoError(t, os.Chmod(filepath.Join(src, "keep.txt"), 0o000))
+	return cfg
+}
+
+func TestCleanAbortsWhenSourceComparisonFails(t *testing.T) {
+	cfg := unreadableCopy(t)
+
+	removed, err := Clean(cfg, CleanOptions{})
+	require.Error(t, err)
+	require.Empty(t, removed)
+	require.FileExists(t, filepath.Join(cfg.Output, "keep.txt"), "an unreadable source must never cost the drive copy")
+}
+
 func TestDiffTreatsCopiesAsInSync(t *testing.T) {
 	src, out := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(src, ".driveignore"), "")
@@ -601,6 +629,11 @@ func TestDiffTreatsCopiesAsInSync(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, res.Missing)
 	require.Empty(t, res.Old)
+}
+
+func TestDiffFailsWhenSourceComparisonFails(t *testing.T) {
+	_, err := Diff(unreadableCopy(t))
+	require.Error(t, err)
 }
 
 func TestUploadCopyFailureKeepsExistingFile(t *testing.T) {

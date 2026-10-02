@@ -274,7 +274,11 @@ func (u *uploader) reconcile(sourcePath, goalPath string, entry fs.DirEntry, goa
 		if err != nil {
 			return fmt.Errorf("stat %s: %w", sourcePath, err)
 		}
-		if u.inSync(sourcePath, goalPath, sourceInfo, goalInfo) {
+		same, err := u.inSync(sourcePath, goalPath, sourceInfo, goalInfo)
+		if err != nil {
+			return err
+		}
+		if same {
 			return nil
 		}
 	}
@@ -290,12 +294,16 @@ func (u *uploader) reconcile(sourcePath, goalPath string, entry fs.DirEntry, goa
 
 // inSync reports whether the goal already matches, from Upload's point of
 // view: in link mode only a hardlink counts, while copy mode also accepts an
-// up-to-date copy.
-func (u *uploader) inSync(sourcePath, goalPath string, sourceInfo, goalInfo os.FileInfo) bool {
+// up-to-date copy. Comparison errors surface instead of counting as a
+// mismatch.
+func (u *uploader) inSync(sourcePath, goalPath string, sourceInfo, goalInfo os.FileInfo) (bool, error) {
 	if os.SameFile(sourceInfo, goalInfo) {
-		return true
+		return true, nil
 	}
-	return u.Copy && filesInSync(sourcePath, goalPath, sourceInfo, goalInfo)
+	if !u.Copy {
+		return false, nil
+	}
+	return filesInSync(sourcePath, goalPath, sourceInfo, goalInfo)
 }
 
 // installFile places the source file at goalPath as a hardlink, or as a copy
@@ -363,38 +371,40 @@ func copyFile(sourcePath, dst string) error {
 // must match within a small tolerance for timestamp rounding; when a
 // timestamp is recent enough to be racy, the content is compared too, so an
 // edit made within the same second is never mistaken for an up-to-date copy.
-func filesInSync(sourcePath, goalPath string, sourceInfo, goalInfo os.FileInfo) bool {
+// Comparison errors are returned, never folded into a mismatch.
+func filesInSync(sourcePath, goalPath string, sourceInfo, goalInfo os.FileInfo) (bool, error) {
 	if sourceInfo.IsDir() || goalInfo.IsDir() {
-		return false
+		return false, nil
 	}
 	if os.SameFile(sourceInfo, goalInfo) {
-		return true
+		return true, nil
 	}
 	if sourceInfo.Size() != goalInfo.Size() {
-		return false
+		return false, nil
 	}
 	const tolerance = 2 * time.Second
 	delta := goalInfo.ModTime().Sub(sourceInfo.ModTime())
 	if delta > tolerance || delta < -tolerance {
-		return false
+		return false, nil
 	}
 	if time.Since(goalInfo.ModTime()) < tolerance || time.Since(sourceInfo.ModTime()) < tolerance {
 		return sameContent(sourcePath, goalPath)
 	}
-	return true
+	return true, nil
 }
 
 // sameContent reports whether two files have identical content, comparing in
-// chunks so large files are not read into memory at once.
-func sameContent(pathA, pathB string) bool {
+// chunks so large files are not read into memory at once. Read errors are
+// returned; they must never be mistaken for differing content.
+func sameContent(pathA, pathB string) (bool, error) {
 	a, err := os.Open(pathA)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("compare %s and %s: %w", pathA, pathB, err)
 	}
 	defer func() { _ = a.Close() }()
 	b, err := os.Open(pathB)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("compare %s and %s: %w", pathA, pathB, err)
 	}
 	defer func() { _ = b.Close() }()
 
@@ -403,16 +413,19 @@ func sameContent(pathA, pathB string) bool {
 	for {
 		nA, errA := io.ReadFull(a, bufA)
 		nB, errB := io.ReadFull(b, bufB)
+		if errA != nil && errA != io.EOF && errA != io.ErrUnexpectedEOF {
+			return false, fmt.Errorf("compare %s and %s: %w", pathA, pathB, errA)
+		}
+		if errB != nil && errB != io.EOF && errB != io.ErrUnexpectedEOF {
+			return false, fmt.Errorf("compare %s and %s: %w", pathA, pathB, errB)
+		}
 		if nA != nB || !bytes.Equal(bufA[:nA], bufB[:nB]) {
-			return false
+			return false, nil
 		}
 		endA := errA == io.EOF || errA == io.ErrUnexpectedEOF
 		endB := errB == io.EOF || errB == io.ErrUnexpectedEOF
 		if endA || endB {
-			return endA == endB
-		}
-		if errA != nil || errB != nil {
-			return false
+			return endA == endB, nil
 		}
 	}
 }
@@ -466,7 +479,10 @@ func (c Config) removeEntry(path string, entry fs.DirEntry, rel string, ignored 
 		if err != nil {
 			return false, err
 		}
-		keep := filesInSync(sourcePath, path, sourceInfo, entryInfo)
+		keep, err := filesInSync(sourcePath, path, sourceInfo, entryInfo)
+		if err != nil {
+			return false, err
+		}
 		pruned := ignored != nil && ignored.Match(sourcePath, false)
 		if keep && !pruned {
 			return false, nil
@@ -507,7 +523,7 @@ func sameEntry(c Config, entryPath string, entry fs.DirEntry, other string) (boo
 	if err != nil {
 		return false, err
 	}
-	return filesInSync(other, entryPath, otherInfo, entryInfo), nil
+	return filesInSync(other, entryPath, otherInfo, entryInfo)
 }
 
 // Diff walks both sides and reports paths that exist on only one of them.
