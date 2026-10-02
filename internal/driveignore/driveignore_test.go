@@ -69,6 +69,15 @@ func assertNotExist(t *testing.T, path string) {
 	require.ErrorIs(t, err, fs.ErrNotExist, "%s should not exist", path)
 }
 
+func assertNoTempEntries(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, entry := range entries {
+		require.NotContains(t, entry.Name(), ".driveignore-", "temporary files must be cleaned up")
+	}
+}
+
 func TestWalkVisitsEntriesInOrderWithoutSpecialPaths(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "b.txt"), "b")
@@ -388,11 +397,74 @@ func TestUploadForceKeepsExistingFileWhenLinkFails(t *testing.T) {
 	require.ErrorIs(t, err, boom)
 	require.Equal(t, "old", read(t, filepath.Join(out, "same.txt")), "a failed link must not destroy the existing file")
 
-	entries, err := os.ReadDir(out)
+	assertNoTempEntries(t, out)
+}
+
+func TestUploadRenameFailureKeepsExistingFile(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "same.txt"), "new")
+	write(t, filepath.Join(out, "same.txt"), "old")
+
+	cfg := baseConfig(t, src, out)
+	resolvedOut, err := filepath.EvalSymlinks(out)
 	require.NoError(t, err)
-	for _, entry := range entries {
-		require.NotContains(t, entry.Name(), ".driveignore-", "temporary links must be cleaned up")
+	goal := filepath.Join(resolvedOut, "same.txt")
+	boom := errors.New("rename boom")
+	cfg.renameFn = func(oldname, newname string) error {
+		if newname == goal {
+			return boom
+		}
+		return os.Rename(oldname, newname)
 	}
+	_, err = Upload(cfg, UploadOptions{Force: true})
+	require.ErrorIs(t, err, boom)
+	require.Equal(t, "old", read(t, filepath.Join(out, "same.txt")), "a failed rename must not destroy the existing file")
+	assertNoTempEntries(t, out)
+}
+
+func TestUploadGoalStatFailureLeavesGoalAlone(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "same.txt"), "new")
+	write(t, filepath.Join(out, "same.txt"), "old")
+
+	cfg := baseConfig(t, src, out)
+	resolvedOut, err := filepath.EvalSymlinks(out)
+	require.NoError(t, err)
+	goal := filepath.Join(resolvedOut, "same.txt")
+	boom := errors.New("lstat boom")
+	cfg.lstatFn = func(path string) (os.FileInfo, error) {
+		if path == goal {
+			return nil, boom
+		}
+		return os.Lstat(path)
+	}
+	_, err = Upload(cfg, UploadOptions{})
+	require.ErrorIs(t, err, boom)
+	require.Equal(t, "old", read(t, goal))
+}
+
+func TestUploadMkdirFailureAbortsBeforeReplacingGoal(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "sub", "same.txt"), "new")
+	write(t, filepath.Join(out, "sub", "same.txt"), "old")
+
+	cfg := baseConfig(t, src, out)
+	resolvedOut, err := filepath.EvalSymlinks(out)
+	require.NoError(t, err)
+	target := filepath.Join(resolvedOut, "sub")
+	boom := errors.New("mkdir boom")
+	cfg.mkdirAllFn = func(path string, perm os.FileMode) error {
+		if path == target {
+			return boom
+		}
+		return os.MkdirAll(path, perm)
+	}
+	_, err = Upload(cfg, UploadOptions{Force: true})
+	require.ErrorIs(t, err, boom)
+	require.Equal(t, "old", read(t, filepath.Join(out, "sub", "same.txt")))
 }
 
 func TestUploadForceReplacesDanglingSymlink(t *testing.T) {
@@ -532,18 +604,26 @@ func TestDiffTreatsCopiesAsInSync(t *testing.T) {
 }
 
 func TestUploadCopyFailureKeepsExistingFile(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits do not block reads on Windows")
-	}
 	src, out := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(src, ".driveignore"), "")
 	write(t, filepath.Join(src, "same.txt"), "new-content")
 	write(t, filepath.Join(out, "same.txt"), "old")
-	require.NoError(t, os.Chmod(filepath.Join(src, "same.txt"), 0o000))
 
-	_, err := Upload(baseConfig(t, src, out), UploadOptions{Copy: true, Force: true})
-	require.Error(t, err)
+	cfg := baseConfig(t, src, out)
+	resolvedSrc, err := filepath.EvalSymlinks(src)
+	require.NoError(t, err)
+	target := filepath.Join(resolvedSrc, "same.txt")
+	copyErr := errors.New("copy boom")
+	cfg.copyFileFn = func(sourcePath, dst string) error {
+		if sourcePath == target {
+			return copyErr
+		}
+		return copyFile(sourcePath, dst)
+	}
+	_, err = Upload(cfg, UploadOptions{Copy: true, Force: true})
+	require.ErrorIs(t, err, copyErr)
 	require.Equal(t, "old", read(t, filepath.Join(out, "same.txt")), "a failed copy must not destroy the existing file")
+	assertNoTempEntries(t, out)
 }
 
 func TestEnsureFileCreatesMissingFileAndKeepsExistingContent(t *testing.T) {

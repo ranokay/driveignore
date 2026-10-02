@@ -24,7 +24,11 @@ type Config struct {
 	Log func(format string, args ...any)
 
 	statFn       func(string) (os.FileInfo, error)   // nil means os.Stat
+	lstatFn      func(string) (os.FileInfo, error)   // nil means os.Lstat
 	linkFn       func(oldname, newname string) error // nil means os.Link
+	mkdirAllFn   func(string, os.FileMode) error     // nil means os.MkdirAll
+	renameFn     func(oldname, newname string) error // nil means os.Rename
+	copyFileFn   func(sourcePath, dst string) error  // nil means copyFile
 	globalPathFn func() (string, error)              // nil means GlobalIgnorePath
 }
 
@@ -77,6 +81,34 @@ func (c Config) link(oldname, newname string) error {
 		return c.linkFn(oldname, newname)
 	}
 	return os.Link(oldname, newname)
+}
+
+func (c Config) lstat(path string) (os.FileInfo, error) {
+	if c.lstatFn != nil {
+		return c.lstatFn(path)
+	}
+	return os.Lstat(path)
+}
+
+func (c Config) mkdirAll(path string, perm os.FileMode) error {
+	if c.mkdirAllFn != nil {
+		return c.mkdirAllFn(path, perm)
+	}
+	return os.MkdirAll(path, perm)
+}
+
+func (c Config) rename(oldname, newname string) error {
+	if c.renameFn != nil {
+		return c.renameFn(oldname, newname)
+	}
+	return os.Rename(oldname, newname)
+}
+
+func (c Config) copyFile(sourcePath, dst string) error {
+	if c.copyFileFn != nil {
+		return c.copyFileFn(sourcePath, dst)
+	}
+	return copyFile(sourcePath, dst)
 }
 
 func (c Config) logf(format string, args ...any) {
@@ -188,7 +220,7 @@ func (u *uploader) reportConflict(rel string) {
 // it with an entry that is already there.
 func (u *uploader) uploadEntry(sourcePath, goalPath string, entry fs.DirEntry, rel string) error {
 	relSlash := filepath.ToSlash(rel)
-	goalInfo, goalErr := os.Lstat(goalPath)
+	goalInfo, goalErr := u.lstat(goalPath)
 	if goalErr != nil && !errors.Is(goalErr, fs.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", goalPath, goalErr)
 	}
@@ -196,7 +228,7 @@ func (u *uploader) uploadEntry(sourcePath, goalPath string, entry fs.DirEntry, r
 		if entry.IsDir() {
 			return u.createDirectory(goalPath, rel)
 		}
-		if err := os.MkdirAll(filepath.Dir(goalPath), 0o755); err != nil {
+		if err := u.mkdirAll(filepath.Dir(goalPath), 0o755); err != nil {
 			return err
 		}
 		return u.installFile(sourcePath, goalPath, relSlash)
@@ -205,7 +237,7 @@ func (u *uploader) uploadEntry(sourcePath, goalPath string, entry fs.DirEntry, r
 }
 
 func (u *uploader) createDirectory(goalPath, rel string) error {
-	if err := os.MkdirAll(goalPath, 0o755); err != nil {
+	if err := u.mkdirAll(goalPath, 0o755); err != nil {
 		return err
 	}
 	u.logf("created directory: %s", filepath.ToSlash(rel))
@@ -250,7 +282,7 @@ func (u *uploader) reconcile(sourcePath, goalPath string, entry fs.DirEntry, goa
 		u.reportConflict(rel)
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(goalPath), 0o755); err != nil {
+	if err := u.mkdirAll(filepath.Dir(goalPath), 0o755); err != nil {
 		return err
 	}
 	return u.installFile(sourcePath, goalPath, rel)
@@ -280,7 +312,7 @@ func (u *uploader) installFile(sourcePath, goalPath, rel string) error {
 
 	var installErr error
 	if u.Copy {
-		installErr = copyFile(sourcePath, tmpName)
+		installErr = u.copyFile(sourcePath, tmpName)
 	} else {
 		installErr = u.link(sourcePath, tmpName)
 	}
@@ -288,7 +320,7 @@ func (u *uploader) installFile(sourcePath, goalPath, rel string) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("install %s: %w", rel, installErr)
 	}
-	if err := os.Rename(tmpName, goalPath); err != nil {
+	if err := u.rename(tmpName, goalPath); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("install %s: %w", rel, err)
 	}
