@@ -38,20 +38,20 @@ With --prune-ignored, it also removes files excluded by .driveignore,
 even when they exist in the source.`,
 		Args: singleDirArg(),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts, err := newOptions(cmd, input, args[0])
+			cfg, err := newOptions(cmd, input, args[0])
 			if err != nil {
 				return err
 			}
-			opts.MergeIgnores = mergeIgnores
-			opts.PruneIgnored = pruneIgnored
-			opts.Copy = copyFiles
-			return driveignore.Unify(opts)
+			cfg.MergeIgnores = mergeIgnores
+			res, err := driveignore.Unify(cfg, driveignore.UnifyOptions{PruneIgnored: pruneIgnored, Copy: copyFiles})
+			printConflicts(cmd.OutOrStdout(), res.Conflicts)
+			return err
 		},
 	}
-	cmd.Flags().StringVarP(&input, "input", "i", ".", "Input directory of the files to be uploaded")
-	cmd.Flags().BoolVarP(&mergeIgnores, "merge-ignores", "M", false, "Merges the global and the input directory's .driveignore")
-	cmd.Flags().BoolVar(&pruneIgnored, "prune-ignored", false, "Remove files excluded by .driveignore even when they exist in the source")
-	cmd.Flags().BoolVar(&copyFiles, "copy", false, "Copy files instead of hardlinking them (for filesystems without hardlink support)")
+	addInputFlag(cmd, &input)
+	addMergeIgnoresFlag(cmd, &mergeIgnores)
+	addPruneIgnoredFlag(cmd, &pruneIgnored)
+	addCopyFlag(cmd, &copyFiles)
 	return cmd
 }
 

@@ -11,10 +11,6 @@ import (
 	gitignore "github.com/go-git/go-git/v5/plumbing/format/gitignore"
 )
 
-// ErrNoIgnore reports that no .driveignore file exists anywhere in the source
-// tree (neither local, nested, nor global).
-var ErrNoIgnore = errors.New("no .driveignore found")
-
 // Matcher reports whether a path (relative to or below the source directory)
 // is excluded by the loaded .driveignore files.
 type Matcher interface {
@@ -48,20 +44,33 @@ func matchPatterns(patterns []gitignore.Pattern, path []string, isDir bool) bool
 	return false
 }
 
-// LoadIgnore resolves the ignore rules that apply to localPath: the global
-// file at globalPath, the root file at localPath/.driveignore, and every
-// nested .driveignore below localPath. Nested patterns are anchored to their
-// own directory and override rules from shallower files. When merge is false
-// and a local root file exists, the global file is not used.
-func LoadIgnore(globalPath, localPath string, merge bool) (Matcher, error) {
-	globalPatterns, globalExists, err := readPatterns(globalPath, nil)
-	if err != nil {
-		return nil, err
-	}
-	localFile := filepath.Join(localPath, ".driveignore")
+// LoadIgnore resolves the ignore rules that apply to root: the root file at
+// root/.driveignore, the global file resolved through globalPath, and every
+// nested .driveignore below root. The global path is resolved and its file
+// read only when those rules can matter: merge is true, or no root file
+// exists. Nested patterns are anchored to their own directory and override
+// rules from shallower files. A nil Matcher with a nil error reports that no
+// ignore file exists anywhere; the returned string is the resolved global
+// path, empty when it was never needed.
+func LoadIgnore(root string, merge bool, globalPath func() (string, error)) (Matcher, string, error) {
+	localFile := filepath.Join(root, ".driveignore")
 	localPatterns, localExists, err := readPatterns(localFile, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+
+	var globalPatterns []gitignore.Pattern
+	var globalExists bool
+	var globalPathUsed string
+	if merge || !localExists {
+		globalPathUsed, err = globalPath()
+		if err != nil {
+			return nil, "", err
+		}
+		globalPatterns, globalExists, err = readPatterns(globalPathUsed, nil)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 
 	var patterns []gitignore.Pattern
@@ -75,15 +84,15 @@ func LoadIgnore(globalPath, localPath string, merge bool) (Matcher, error) {
 		patterns = append(patterns, localPatterns...)
 	}
 
-	nested, nestedFound, err := nestedPatterns(localPath)
+	nested, nestedFound, err := nestedPatterns(root)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	patterns = append(patterns, nested...)
 	if !localExists && !globalExists && !nestedFound {
-		return nil, ErrNoIgnore
+		return nil, globalPathUsed, nil
 	}
-	return pathMatcher{patterns: patterns, root: localPath}, nil
+	return pathMatcher{patterns: patterns, root: root}, globalPathUsed, nil
 }
 
 // readPatterns parses the file at path into patterns anchored at domain. A
@@ -168,15 +177,19 @@ func GlobalIgnorePath() (string, error) {
 }
 
 // EnsureFile creates path and its parents when path does not exist yet.
-// Existing files are left untouched.
-func EnsureFile(path string) error {
+// Existing files are left untouched. created reports whether this call
+// created the file.
+func EnsureFile(path string) (bool, error) {
 	if _, err := os.Stat(path); err == nil {
-		return nil
+		return false, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
+		return false, err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return false, err
 	}
-	return os.WriteFile(path, nil, 0o644)
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
 }

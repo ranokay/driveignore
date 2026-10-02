@@ -15,10 +15,7 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -43,11 +40,11 @@ You can later decide if you want to use global, local or merged .driveignore.`,
 			if err != nil {
 				return err
 			}
-			_, statErr := os.Stat(path)
-			if err := driveignore.EnsureFile(path); err != nil {
+			created, err := driveignore.EnsureFile(path)
+			if err != nil {
 				return err
 			}
-			if verbose && errors.Is(statErr, fs.ErrNotExist) {
+			if verbose && created {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), ".global_driveignore didnt exist, created a new one")
 			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), path)

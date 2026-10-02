@@ -37,20 +37,20 @@ current folder > global config
 `,
 		Args: singleDirArg(),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts, err := newOptions(cmd, input, args[0])
+			cfg, err := newOptions(cmd, input, args[0])
 			if err != nil {
 				return err
 			}
-			opts.MergeIgnores = mergeIgnores
-			opts.Force = force
-			opts.Copy = copyFiles
-			return driveignore.Upload(opts)
+			cfg.MergeIgnores = mergeIgnores
+			res, err := driveignore.Upload(cfg, driveignore.UploadOptions{Force: force, Copy: copyFiles})
+			printConflicts(cmd.OutOrStdout(), res.Conflicts)
+			return err
 		},
 	}
-	cmd.Flags().StringVarP(&input, "input", "i", ".", "Input directory of the files to be uploaded")
-	cmd.Flags().BoolVarP(&mergeIgnores, "merge-ignores", "M", false, "Merges global and input dir .driveignore")
+	addInputFlag(cmd, &input)
+	addMergeIgnoresFlag(cmd, &mergeIgnores)
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing files with the same name")
-	cmd.Flags().BoolVar(&copyFiles, "copy", false, "Copy files instead of hardlinking them (for filesystems without hardlink support)")
+	addCopyFlag(cmd, &copyFiles)
 	return cmd
 }
 

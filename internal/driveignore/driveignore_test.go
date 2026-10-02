@@ -1,7 +1,6 @@
 package driveignore
 
 import (
-	"bytes"
 	"errors"
 	"io/fs"
 	"os"
@@ -32,6 +31,29 @@ func missingGlobal(t *testing.T) string {
 	return filepath.Join(t.TempDir(), "global", ".global_driveignore")
 }
 
+func globalFn(path string) func() (string, error) {
+	return func() (string, error) { return path, nil }
+}
+
+func baseConfig(t *testing.T, src, out string) Config {
+	t.Helper()
+	return Config{Input: src, Output: out, globalPathFn: globalFn(missingGlobal(t))}
+}
+
+func runUpload(t *testing.T, cfg Config, opts UploadOptions) UploadResult {
+	t.Helper()
+	res, err := Upload(cfg, opts)
+	require.NoError(t, err)
+	return res
+}
+
+func runUnify(t *testing.T, cfg Config, opts UnifyOptions) UploadResult {
+	t.Helper()
+	res, err := Unify(cfg, opts)
+	require.NoError(t, err)
+	return res
+}
+
 func assertLinked(t *testing.T, source, output string) {
 	t.Helper()
 	srcInfo, err := os.Stat(source)
@@ -45,6 +67,15 @@ func assertNotExist(t *testing.T, path string) {
 	t.Helper()
 	_, err := os.Stat(path)
 	require.ErrorIs(t, err, fs.ErrNotExist, "%s should not exist", path)
+}
+
+func assertNoTempEntries(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, entry := range entries {
+		require.NotContains(t, entry.Name(), ".driveignore-", "temporary files must be cleaned up")
+	}
 }
 
 func TestWalkVisitsEntriesInOrderWithoutSpecialPaths(t *testing.T) {
@@ -93,7 +124,7 @@ func TestUploadHardlinksFilesAndCreatesEmptyDirs(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(src, "emptydir"), 0o755))
 	write(t, filepath.Join(src, "ignored-dir", "x.txt"), "x")
 
-	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t)}))
+	runUpload(t, baseConfig(t, src, out), UploadOptions{})
 
 	assertLinked(t, filepath.Join(src, "keep.txt"), filepath.Join(out, "keep.txt"))
 	assertLinked(t, filepath.Join(src, "sub", "nested.txt"), filepath.Join(out, "sub", "nested.txt"))
@@ -105,8 +136,13 @@ func TestUploadHardlinksFilesAndCreatesEmptyDirs(t *testing.T) {
 }
 
 func TestUploadWithoutAnyDriveignoreFails(t *testing.T) {
-	err := Upload(Options{Input: t.TempDir(), Output: t.TempDir(), GlobalIgnorePath: missingGlobal(t)})
-	require.Error(t, err)
+	cfg := baseConfig(t, t.TempDir(), t.TempDir())
+	_, err := Upload(cfg, UploadOptions{})
+	require.ErrorContains(t, err, "no .driveignore found")
+
+	globalPath, pathErr := cfg.globalPath()
+	require.NoError(t, pathErr)
+	require.ErrorContains(t, err, globalPath)
 }
 
 func TestUploadConflictKeepsExistingFileUnlessForced(t *testing.T) {
@@ -115,14 +151,12 @@ func TestUploadConflictKeepsExistingFileUnlessForced(t *testing.T) {
 	write(t, filepath.Join(src, "same.txt"), "new")
 	write(t, filepath.Join(out, "same.txt"), "old")
 
-	var notices bytes.Buffer
-	opts := Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Out: &notices}
-	require.NoError(t, Upload(opts))
+	cfg := baseConfig(t, src, out)
+	res := runUpload(t, cfg, UploadOptions{})
 	require.Equal(t, "old", read(t, filepath.Join(out, "same.txt")))
-	require.Contains(t, notices.String(), "same.txt")
+	require.Contains(t, res.Conflicts, "same.txt")
 
-	opts.Force = true
-	require.NoError(t, Upload(opts))
+	runUpload(t, cfg, UploadOptions{Force: true})
 	assertLinked(t, filepath.Join(src, "same.txt"), filepath.Join(out, "same.txt"))
 }
 
@@ -131,7 +165,7 @@ func TestUploadHandlesUnicodeAndSpaceFilenames(t *testing.T) {
 	write(t, filepath.Join(src, ".driveignore"), "")
 	write(t, filepath.Join(src, "ünïcode", "spa ce.txt"), "x")
 
-	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t)}))
+	runUpload(t, baseConfig(t, src, out), UploadOptions{})
 	assertLinked(t, filepath.Join(src, "ünïcode", "spa ce.txt"), filepath.Join(out, "ünïcode", "spa ce.txt"))
 }
 
@@ -139,11 +173,12 @@ func TestCleanRemovesFilesThatAreMissingFromSource(t *testing.T) {
 	src, out := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(src, ".driveignore"), "")
 	write(t, filepath.Join(src, "keep.txt"), "keep")
-	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t)}))
+	cfg := baseConfig(t, src, out)
+	runUpload(t, cfg, UploadOptions{})
 	write(t, filepath.Join(out, "legacy.txt"), "legacy")
 	write(t, filepath.Join(out, "sub", "legacy.txt"), "legacy")
 
-	removed, err := Clean(Options{Input: src, Output: out})
+	removed, err := Clean(cfg, CleanOptions{})
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"legacy.txt", filepath.ToSlash(filepath.Join("sub", "legacy.txt"))}, removed)
 	assertLinked(t, filepath.Join(src, "keep.txt"), filepath.Join(out, "keep.txt"))
@@ -157,13 +192,15 @@ func TestCleanAbortsInsteadOfDeletingWhenSourceStatFails(t *testing.T) {
 	write(t, filepath.Join(out, "keep.txt"), "not a link")
 	write(t, filepath.Join(out, "sub", "other.txt"), "other")
 
+	cfg := baseConfig(t, src, out)
 	denied := errors.New("permission denied")
-	_, err := Clean(Options{Input: src, Output: out, statFn: func(path string) (os.FileInfo, error) {
+	cfg.statFn = func(path string) (os.FileInfo, error) {
 		if strings.HasSuffix(path, filepath.Join("sub", "other.txt")) {
 			return nil, denied
 		}
 		return os.Stat(path)
-	}})
+	}
+	_, err := Clean(cfg, CleanOptions{})
 	require.ErrorIs(t, err, denied)
 	_, statErr := os.Stat(filepath.Join(out, "sub", "other.txt"))
 	require.NoError(t, statErr, "a stat error must never lead to deletion")
@@ -173,12 +210,13 @@ func TestDiffFindsMissingAndLegacyEntries(t *testing.T) {
 	src, out := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(src, ".driveignore"), "")
 	write(t, filepath.Join(src, "keep.txt"), "keep")
-	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t)}))
+	cfg := baseConfig(t, src, out)
+	runUpload(t, cfg, UploadOptions{})
 	write(t, filepath.Join(src, "only-src.txt"), "s")
 	write(t, filepath.Join(out, "only-out.txt"), "o")
 	require.NoError(t, os.MkdirAll(filepath.Join(src, "newdir"), 0o755))
 
-	res, err := Diff(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t)})
+	res, err := Diff(cfg)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"only-src.txt", "newdir"}, res.Missing)
 	require.ElementsMatch(t, []string{"only-out.txt"}, res.Old)
@@ -192,7 +230,7 @@ func TestUnifyUploadsAndCleansInOnePass(t *testing.T) {
 	write(t, filepath.Join(out, "keep.txt"), "stale")
 	write(t, filepath.Join(out, "legacy.txt"), "legacy")
 
-	require.NoError(t, Unify(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t)}))
+	runUnify(t, baseConfig(t, src, out), UnifyOptions{})
 
 	assertLinked(t, filepath.Join(src, "keep.txt"), filepath.Join(out, "keep.txt"))
 	assertNotExist(t, filepath.Join(out, "legacy.txt"))
@@ -206,7 +244,7 @@ func TestLoadIgnoreSelectsLocalGlobalAndMerged(t *testing.T) {
 	write(t, global, "global-only.txt\n")
 
 	t.Run("local only", func(t *testing.T) {
-		matcher, err := LoadIgnore(global, local, false)
+		matcher, _, err := LoadIgnore(local, false, globalFn(global))
 		require.NoError(t, err)
 		require.True(t, matcher.Match(filepath.Join(local, "local-only.txt"), false))
 		require.False(t, matcher.Match(filepath.Join(local, "global-only.txt"), false))
@@ -214,24 +252,39 @@ func TestLoadIgnoreSelectsLocalGlobalAndMerged(t *testing.T) {
 
 	t.Run("global only", func(t *testing.T) {
 		other := t.TempDir()
-		matcher, err := LoadIgnore(global, other, false)
+		matcher, _, err := LoadIgnore(other, false, globalFn(global))
 		require.NoError(t, err)
 		require.True(t, matcher.Match(filepath.Join(other, "global-only.txt"), false))
 		require.False(t, matcher.Match(filepath.Join(other, "local-only.txt"), false))
 	})
 
 	t.Run("merged", func(t *testing.T) {
-		matcher, err := LoadIgnore(global, local, true)
+		matcher, _, err := LoadIgnore(local, true, globalFn(global))
 		require.NoError(t, err)
 		require.True(t, matcher.Match(filepath.Join(local, "local-only.txt"), false))
 		require.True(t, matcher.Match(filepath.Join(local, "global-only.txt"), false))
 	})
 
 	t.Run("none", func(t *testing.T) {
-		matcher, err := LoadIgnore(missingGlobal(t), t.TempDir(), false)
-		require.ErrorIs(t, err, ErrNoIgnore)
+		matcher, _, err := LoadIgnore(t.TempDir(), false, globalFn(missingGlobal(t)))
+		require.NoError(t, err)
 		require.Nil(t, matcher)
 	})
+}
+
+func TestLoadIgnoreResolvesGlobalPathOnlyWhenNeeded(t *testing.T) {
+	local := t.TempDir()
+	write(t, filepath.Join(local, ".driveignore"), "local-only.txt\n")
+	boom := errors.New("no user config dir")
+
+	// A local root file with merge off makes the global path irrelevant.
+	matcher, _, err := LoadIgnore(local, false, func() (string, error) { return "", boom })
+	require.NoError(t, err)
+	require.True(t, matcher.Match(filepath.Join(local, "local-only.txt"), false))
+
+	// Merging makes it relevant.
+	_, _, err = LoadIgnore(local, true, func() (string, error) { return "", boom })
+	require.ErrorIs(t, err, boom)
 }
 
 func TestUploadAndCleanLeaveSymlinksAlone(t *testing.T) {
@@ -243,13 +296,14 @@ func TestUploadAndCleanLeaveSymlinksAlone(t *testing.T) {
 	write(t, filepath.Join(src, "real.txt"), "real")
 	require.NoError(t, os.Symlink(filepath.Join(src, "real.txt"), filepath.Join(src, "link.txt")))
 
-	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t)}))
+	cfg := baseConfig(t, src, out)
+	runUpload(t, cfg, UploadOptions{})
 	assertNotExist(t, filepath.Join(out, "link.txt"))
 	assertLinked(t, filepath.Join(src, "real.txt"), filepath.Join(out, "real.txt"))
 
 	// Symlinks already inside the drive folder are left alone by clean.
 	require.NoError(t, os.Symlink(filepath.Join(out, "real.txt"), filepath.Join(out, "stray-link.txt")))
-	removed, err := Clean(Options{Input: src, Output: out})
+	removed, err := Clean(cfg, CleanOptions{})
 	require.NoError(t, err)
 	require.Empty(t, removed)
 	_, err = os.Lstat(filepath.Join(out, "stray-link.txt"))
@@ -261,7 +315,7 @@ func TestCleanDryRunReportsWithoutRemoving(t *testing.T) {
 	write(t, filepath.Join(src, "keep.txt"), "keep")
 	write(t, filepath.Join(out, "legacy.txt"), "legacy")
 
-	removed, err := Clean(Options{Input: src, Output: out, DryRun: true})
+	removed, err := Clean(baseConfig(t, src, out), CleanOptions{DryRun: true})
 	require.NoError(t, err)
 	require.Equal(t, []string{"legacy.txt"}, removed)
 	require.Equal(t, "legacy", read(t, filepath.Join(out, "legacy.txt")), "dry-run must not remove anything")
@@ -273,16 +327,29 @@ func TestCleanPruneIgnoredRemovesFilesExcludedByDriveignore(t *testing.T) {
 	write(t, filepath.Join(src, "ignored.txt"), "ignored")
 	require.NoError(t, os.Link(filepath.Join(src, "ignored.txt"), filepath.Join(out, "ignored.txt")))
 
+	cfg := baseConfig(t, src, out)
+
 	// Without pruning the linked drive copy stays: its source still exists.
-	removed, err := Clean(Options{Input: src, Output: out})
+	removed, err := Clean(cfg, CleanOptions{})
 	require.NoError(t, err)
 	require.Empty(t, removed)
 	require.FileExists(t, filepath.Join(out, "ignored.txt"))
 
-	removed, err = Clean(Options{Input: src, Output: out, PruneIgnored: true, GlobalIgnorePath: missingGlobal(t)})
+	removed, err = Clean(cfg, CleanOptions{PruneIgnored: true})
 	require.NoError(t, err)
 	require.Equal(t, []string{"ignored.txt"}, removed)
 	assertNotExist(t, filepath.Join(out, "ignored.txt"))
+}
+
+func TestCleanPruneIgnoredWithoutAnyIgnoreFileProceeds(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, "keep.txt"), "keep")
+	require.NoError(t, os.Link(filepath.Join(src, "keep.txt"), filepath.Join(out, "keep.txt")))
+
+	removed, err := Clean(baseConfig(t, src, out), CleanOptions{PruneIgnored: true})
+	require.NoError(t, err)
+	require.Empty(t, removed)
+	require.FileExists(t, filepath.Join(out, "keep.txt"))
 }
 
 func TestUploadFollowsSymlinkedInputRoot(t *testing.T) {
@@ -296,7 +363,7 @@ func TestUploadFollowsSymlinkedInputRoot(t *testing.T) {
 	require.NoError(t, os.Symlink(realSrc, src))
 
 	out := t.TempDir()
-	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t)}))
+	runUpload(t, baseConfig(t, src, out), UploadOptions{})
 	assertLinked(t, filepath.Join(realSrc, "keep.txt"), filepath.Join(out, "keep.txt"))
 }
 
@@ -311,7 +378,7 @@ func TestCleanFollowsSymlinkedDriveRoot(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "out")
 	require.NoError(t, os.Symlink(realOut, out))
 
-	removed, err := Clean(Options{Input: src, Output: out})
+	removed, err := Clean(baseConfig(t, src, out), CleanOptions{})
 	require.NoError(t, err)
 	require.Equal(t, []string{"legacy.txt"}, removed)
 	assertNotExist(t, filepath.Join(realOut, "legacy.txt"))
@@ -323,19 +390,81 @@ func TestUploadForceKeepsExistingFileWhenLinkFails(t *testing.T) {
 	write(t, filepath.Join(src, "same.txt"), "new")
 	write(t, filepath.Join(out, "same.txt"), "old")
 
+	cfg := baseConfig(t, src, out)
 	boom := errors.New("link boom")
-	err := Upload(Options{
-		Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Force: true,
-		linkFn: func(string, string) error { return boom },
-	})
+	cfg.linkFn = func(string, string) error { return boom }
+	_, err := Upload(cfg, UploadOptions{Force: true})
 	require.ErrorIs(t, err, boom)
 	require.Equal(t, "old", read(t, filepath.Join(out, "same.txt")), "a failed link must not destroy the existing file")
 
-	entries, err := os.ReadDir(out)
+	assertNoTempEntries(t, out)
+}
+
+func TestUploadRenameFailureKeepsExistingFile(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "same.txt"), "new")
+	write(t, filepath.Join(out, "same.txt"), "old")
+
+	cfg := baseConfig(t, src, out)
+	resolvedOut, err := filepath.EvalSymlinks(out)
 	require.NoError(t, err)
-	for _, entry := range entries {
-		require.NotContains(t, entry.Name(), ".driveignore-", "temporary links must be cleaned up")
+	goal := filepath.Join(resolvedOut, "same.txt")
+	boom := errors.New("rename boom")
+	cfg.renameFn = func(oldname, newname string) error {
+		if newname == goal {
+			return boom
+		}
+		return os.Rename(oldname, newname)
 	}
+	_, err = Upload(cfg, UploadOptions{Force: true})
+	require.ErrorIs(t, err, boom)
+	require.Equal(t, "old", read(t, filepath.Join(out, "same.txt")), "a failed rename must not destroy the existing file")
+	assertNoTempEntries(t, out)
+}
+
+func TestUploadGoalStatFailureLeavesGoalAlone(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "same.txt"), "new")
+	write(t, filepath.Join(out, "same.txt"), "old")
+
+	cfg := baseConfig(t, src, out)
+	resolvedOut, err := filepath.EvalSymlinks(out)
+	require.NoError(t, err)
+	goal := filepath.Join(resolvedOut, "same.txt")
+	boom := errors.New("lstat boom")
+	cfg.lstatFn = func(path string) (os.FileInfo, error) {
+		if path == goal {
+			return nil, boom
+		}
+		return os.Lstat(path)
+	}
+	_, err = Upload(cfg, UploadOptions{})
+	require.ErrorIs(t, err, boom)
+	require.Equal(t, "old", read(t, goal))
+}
+
+func TestUploadMkdirFailureAbortsBeforeReplacingGoal(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "sub", "same.txt"), "new")
+	write(t, filepath.Join(out, "sub", "same.txt"), "old")
+
+	cfg := baseConfig(t, src, out)
+	resolvedOut, err := filepath.EvalSymlinks(out)
+	require.NoError(t, err)
+	target := filepath.Join(resolvedOut, "sub")
+	boom := errors.New("mkdir boom")
+	cfg.mkdirAllFn = func(path string, perm os.FileMode) error {
+		if path == target {
+			return boom
+		}
+		return os.MkdirAll(path, perm)
+	}
+	_, err = Upload(cfg, UploadOptions{Force: true})
+	require.ErrorIs(t, err, boom)
+	require.Equal(t, "old", read(t, filepath.Join(out, "sub", "same.txt")))
 }
 
 func TestUploadForceReplacesDanglingSymlink(t *testing.T) {
@@ -347,14 +476,14 @@ func TestUploadForceReplacesDanglingSymlink(t *testing.T) {
 	write(t, filepath.Join(src, "foo.txt"), "new")
 	require.NoError(t, os.Symlink("missing-target", filepath.Join(out, "foo.txt")))
 
-	var notices bytes.Buffer
-	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Out: &notices}))
-	require.Contains(t, notices.String(), "foo.txt")
+	cfg := baseConfig(t, src, out)
+	res := runUpload(t, cfg, UploadOptions{})
+	require.Contains(t, res.Conflicts, "foo.txt")
 	info, err := os.Lstat(filepath.Join(out, "foo.txt"))
 	require.NoError(t, err)
 	require.NotZero(t, info.Mode()&os.ModeSymlink)
 
-	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Force: true}))
+	runUpload(t, cfg, UploadOptions{Force: true})
 	assertLinked(t, filepath.Join(src, "foo.txt"), filepath.Join(out, "foo.txt"))
 }
 
@@ -364,14 +493,14 @@ func TestUploadForceReplacesFileWithDirectory(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(src, "d"), 0o755))
 	write(t, filepath.Join(out, "d"), "file")
 
-	var notices bytes.Buffer
-	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Out: &notices}))
-	require.Contains(t, notices.String(), "d")
+	cfg := baseConfig(t, src, out)
+	res := runUpload(t, cfg, UploadOptions{})
+	require.Contains(t, res.Conflicts, "d")
 	info, err := os.Stat(filepath.Join(out, "d"))
 	require.NoError(t, err)
 	require.True(t, info.Mode().IsRegular(), "without --force the file must stay")
 
-	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Force: true}))
+	runUpload(t, cfg, UploadOptions{Force: true})
 	info, err = os.Stat(filepath.Join(out, "d"))
 	require.NoError(t, err)
 	require.True(t, info.IsDir(), "with --force the directory must replace the file")
@@ -382,7 +511,7 @@ func TestUploadCopyCreatesIndependentCopies(t *testing.T) {
 	write(t, filepath.Join(src, ".driveignore"), "")
 	write(t, filepath.Join(src, "keep.txt"), "keep")
 
-	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true}))
+	runUpload(t, baseConfig(t, src, out), UploadOptions{Copy: true})
 
 	outPath := filepath.Join(out, "keep.txt")
 	srcInfo, err := os.Stat(filepath.Join(src, "keep.txt"))
@@ -401,12 +530,12 @@ func TestUploadCopyIsIdempotent(t *testing.T) {
 	src, out := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(src, ".driveignore"), "")
 	write(t, filepath.Join(src, "keep.txt"), "keep")
-	opts := Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true}
+	cfg := baseConfig(t, src, out)
 
-	require.NoError(t, Upload(opts))
+	runUpload(t, cfg, UploadOptions{Copy: true})
 	before, err := os.Stat(filepath.Join(out, "keep.txt"))
 	require.NoError(t, err)
-	require.NoError(t, Upload(opts))
+	runUpload(t, cfg, UploadOptions{Copy: true})
 	after, err := os.Stat(filepath.Join(out, "keep.txt"))
 	require.NoError(t, err)
 	require.True(t, os.SameFile(before, after), "an in-sync copy must not be rewritten")
@@ -416,13 +545,13 @@ func TestUnifyCopyReplacesChangedSource(t *testing.T) {
 	src, out := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(src, ".driveignore"), "")
 	write(t, filepath.Join(src, "keep.txt"), "one")
-	opts := Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true}
+	cfg := baseConfig(t, src, out)
 
-	require.NoError(t, Unify(opts))
+	runUnify(t, cfg, UnifyOptions{Copy: true})
 	require.Equal(t, "one", read(t, filepath.Join(out, "keep.txt")))
 
 	write(t, filepath.Join(src, "keep.txt"), "two-longer")
-	require.NoError(t, Unify(opts))
+	runUnify(t, cfg, UnifyOptions{Copy: true})
 	require.Equal(t, "two-longer", read(t, filepath.Join(out, "keep.txt")))
 }
 
@@ -430,13 +559,13 @@ func TestUnifyCopyReplacesSameSizeEditImmediately(t *testing.T) {
 	src, out := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(src, ".driveignore"), "")
 	write(t, filepath.Join(src, "keep.txt"), "one")
-	opts := Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true}
+	cfg := baseConfig(t, src, out)
 
-	require.NoError(t, Unify(opts))
+	runUnify(t, cfg, UnifyOptions{Copy: true})
 	// A same-size edit made within the timestamp tolerance must still be
 	// detected (racy timestamps are resolved by comparing content).
 	write(t, filepath.Join(src, "keep.txt"), "two")
-	require.NoError(t, Unify(opts))
+	runUnify(t, cfg, UnifyOptions{Copy: true})
 	require.Equal(t, "two", read(t, filepath.Join(out, "keep.txt")))
 }
 
@@ -444,9 +573,10 @@ func TestCleanKeepsInSyncCopiesAndRemovesStaleOnes(t *testing.T) {
 	src, out := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(src, ".driveignore"), "")
 	write(t, filepath.Join(src, "keep.txt"), "keep")
-	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true}))
+	cfg := baseConfig(t, src, out)
+	runUpload(t, cfg, UploadOptions{Copy: true})
 
-	removed, err := Clean(Options{Input: src, Output: out})
+	removed, err := Clean(cfg, CleanOptions{})
 	require.NoError(t, err)
 	require.Empty(t, removed, "an in-sync copy must be kept")
 
@@ -454,7 +584,7 @@ func TestCleanKeepsInSyncCopiesAndRemovesStaleOnes(t *testing.T) {
 	write(t, filepath.Join(src, "keep.txt"), "KEEP")
 	future := time.Now().Add(time.Hour)
 	require.NoError(t, os.Chtimes(filepath.Join(src, "keep.txt"), future, future))
-	removed, err = Clean(Options{Input: src, Output: out})
+	removed, err = Clean(cfg, CleanOptions{})
 	require.NoError(t, err)
 	require.Equal(t, []string{"keep.txt"}, removed)
 	assertNotExist(t, filepath.Join(out, "keep.txt"))
@@ -464,32 +594,43 @@ func TestDiffTreatsCopiesAsInSync(t *testing.T) {
 	src, out := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(src, ".driveignore"), "")
 	write(t, filepath.Join(src, "keep.txt"), "keep")
-	require.NoError(t, Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true}))
+	cfg := baseConfig(t, src, out)
+	runUpload(t, cfg, UploadOptions{Copy: true})
 
-	res, err := Diff(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t)})
+	res, err := Diff(cfg)
 	require.NoError(t, err)
 	require.Empty(t, res.Missing)
 	require.Empty(t, res.Old)
 }
 
 func TestUploadCopyFailureKeepsExistingFile(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits do not block reads on Windows")
-	}
 	src, out := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(src, ".driveignore"), "")
 	write(t, filepath.Join(src, "same.txt"), "new-content")
 	write(t, filepath.Join(out, "same.txt"), "old")
-	require.NoError(t, os.Chmod(filepath.Join(src, "same.txt"), 0o000))
 
-	err := Upload(Options{Input: src, Output: out, GlobalIgnorePath: missingGlobal(t), Copy: true, Force: true})
-	require.Error(t, err)
+	cfg := baseConfig(t, src, out)
+	resolvedSrc, err := filepath.EvalSymlinks(src)
+	require.NoError(t, err)
+	target := filepath.Join(resolvedSrc, "same.txt")
+	copyErr := errors.New("copy boom")
+	cfg.copyFileFn = func(sourcePath, dst string) error {
+		if sourcePath == target {
+			return copyErr
+		}
+		return copyFile(sourcePath, dst)
+	}
+	_, err = Upload(cfg, UploadOptions{Copy: true, Force: true})
+	require.ErrorIs(t, err, copyErr)
 	require.Equal(t, "old", read(t, filepath.Join(out, "same.txt")), "a failed copy must not destroy the existing file")
+	assertNoTempEntries(t, out)
 }
 
 func TestEnsureFileCreatesMissingFileAndKeepsExistingContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", ".global_driveignore")
-	require.NoError(t, EnsureFile(path))
+	created, err := EnsureFile(path)
+	require.NoError(t, err)
+	require.True(t, created)
 
 	info, err := os.Stat(path)
 	require.NoError(t, err)
@@ -499,6 +640,8 @@ func TestEnsureFileCreatesMissingFileAndKeepsExistingContent(t *testing.T) {
 	}
 
 	require.NoError(t, os.WriteFile(path, []byte("keep\n"), 0o644))
-	require.NoError(t, EnsureFile(path))
+	created, err = EnsureFile(path)
+	require.NoError(t, err)
+	require.False(t, created)
 	require.Equal(t, "keep\n", read(t, path))
 }

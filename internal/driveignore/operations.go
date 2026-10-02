@@ -11,32 +11,56 @@ import (
 	"time"
 )
 
-// Options configures a core operation. Input is the source directory; Output
-// is the drive folder, except for Clean where Output is walked and Input is
-// only used as the reference.
-type Options struct {
-	Input            string
-	Output           string
-	GlobalIgnorePath string
-	MergeIgnores     bool
-	Force            bool
-	// DryRun makes Clean report its removals without deleting anything.
-	DryRun bool
-	// PruneIgnored makes Clean remove drive files that the ignore rules
-	// exclude even when the source still contains them.
-	PruneIgnored bool
-	// Copy copies files instead of hardlinking them. Use it on filesystems
-	// that do not support hardlinks (virtual drives, FAT, network shares);
-	// clean and diff then treat equal size and modification time as in sync.
-	Copy bool
+// Config is the invocation context shared by every core operation. Input is
+// the source directory; Output is the drive folder, except for Clean where
+// Output is walked and Input is only used as the reference.
+type Config struct {
+	Input  string
+	Output string
+	// MergeIgnores merges the global and input dir .driveignore files.
+	MergeIgnores bool
 
-	// Out receives user-facing notices. Defaults to io.Discard.
-	Out io.Writer
 	// Log receives verbose diagnostics. nil disables them.
 	Log func(format string, args ...any)
 
-	statFn func(string) (os.FileInfo, error)   // nil means os.Stat
-	linkFn func(oldname, newname string) error // nil means os.Link
+	statFn       func(string) (os.FileInfo, error)   // nil means os.Stat
+	lstatFn      func(string) (os.FileInfo, error)   // nil means os.Lstat
+	linkFn       func(oldname, newname string) error // nil means os.Link
+	mkdirAllFn   func(string, os.FileMode) error     // nil means os.MkdirAll
+	renameFn     func(oldname, newname string) error // nil means os.Rename
+	copyFileFn   func(sourcePath, dst string) error  // nil means copyFile
+	globalPathFn func() (string, error)              // nil means GlobalIgnorePath
+}
+
+// UploadOptions configures Upload. Force overwrites existing entries with the
+// same relative path; Copy copies files instead of hardlinking them, for
+// filesystems that do not support hardlinks (virtual drives, FAT, network
+// shares); clean and diff then treat equal size and modification time as in
+// sync.
+type UploadOptions struct {
+	Force bool
+	Copy  bool
+}
+
+// UploadResult reports the conflicts Upload left alone.
+type UploadResult struct {
+	// Conflicts lists relative paths whose drive-side entry already exists.
+	Conflicts []string
+}
+
+// CleanOptions configures Clean. DryRun reports removals without deleting
+// anything; PruneIgnored removes drive files that the ignore rules exclude
+// even when the source still contains them.
+type CleanOptions struct {
+	DryRun       bool
+	PruneIgnored bool
+}
+
+// UnifyOptions configures Unify. PruneIgnored is forwarded to its clean half;
+// Copy applies to the upload half.
+type UnifyOptions struct {
+	PruneIgnored bool
+	Copy         bool
 }
 
 // DiffResult lists relative paths that exist on only one side.
@@ -45,44 +69,79 @@ type DiffResult struct {
 	Old     []string // present in Output, missing from Input
 }
 
-func (o Options) out() io.Writer {
-	if o.Out == nil {
-		return io.Discard
-	}
-	return o.Out
-}
-
-func (o Options) stat(path string) (os.FileInfo, error) {
-	if o.statFn != nil {
-		return o.statFn(path)
+func (c Config) stat(path string) (os.FileInfo, error) {
+	if c.statFn != nil {
+		return c.statFn(path)
 	}
 	return os.Stat(path)
 }
 
-func (o Options) link(oldname, newname string) error {
-	if o.linkFn != nil {
-		return o.linkFn(oldname, newname)
+func (c Config) link(oldname, newname string) error {
+	if c.linkFn != nil {
+		return c.linkFn(oldname, newname)
 	}
 	return os.Link(oldname, newname)
 }
 
-func (o Options) logf(format string, args ...any) {
-	if o.Log != nil {
-		o.Log(format, args...)
+func (c Config) lstat(path string) (os.FileInfo, error) {
+	if c.lstatFn != nil {
+		return c.lstatFn(path)
+	}
+	return os.Lstat(path)
+}
+
+func (c Config) mkdirAll(path string, perm os.FileMode) error {
+	if c.mkdirAllFn != nil {
+		return c.mkdirAllFn(path, perm)
+	}
+	return os.MkdirAll(path, perm)
+}
+
+func (c Config) rename(oldname, newname string) error {
+	if c.renameFn != nil {
+		return c.renameFn(oldname, newname)
+	}
+	return os.Rename(oldname, newname)
+}
+
+func (c Config) copyFile(sourcePath, dst string) error {
+	if c.copyFileFn != nil {
+		return c.copyFileFn(sourcePath, dst)
+	}
+	return copyFile(sourcePath, dst)
+}
+
+func (c Config) logf(format string, args ...any) {
+	if c.Log != nil {
+		c.Log(format, args...)
 	}
 }
 
-func (o Options) reportConflict(rel string) {
-	_, _ = fmt.Fprintf(o.out(), "cannot upload '%s'. A file with the same name already exists.\n", rel)
+// globalPath resolves the global .driveignore location: the injected seam in
+// tests, GlobalIgnorePath otherwise.
+func (c Config) globalPath() (string, error) {
+	if c.globalPathFn != nil {
+		return c.globalPathFn()
+	}
+	return GlobalIgnorePath()
 }
 
-func (o Options) ignore() (Matcher, error) {
-	matcher, err := LoadIgnore(o.GlobalIgnorePath, o.Input, o.MergeIgnores)
-	if errors.Is(err, ErrNoIgnore) {
-		return nil, fmt.Errorf("no .driveignore found in %s or at %s", o.Input, o.GlobalIgnorePath)
-	}
+// rules loads whatever ignore rules apply to the invocation. A nil Matcher
+// means no ignore file exists anywhere; the returned path is the resolved
+// global location when it was needed.
+func (c Config) rules() (Matcher, string, error) {
+	return LoadIgnore(c.Input, c.MergeIgnores, c.globalPath)
+}
+
+// ignore returns the rules Upload and Diff require, or an error naming where
+// a .driveignore was looked for.
+func (c Config) ignore() (Matcher, error) {
+	matcher, globalPath, err := c.rules()
 	if err != nil {
 		return nil, err
+	}
+	if matcher == nil {
+		return nil, fmt.Errorf("no .driveignore found in %s or at %s", c.Input, globalPath)
 	}
 	return matcher, nil
 }
@@ -96,135 +155,153 @@ func resolveRoot(path string) (string, error) {
 	return filepath.EvalSymlinks(path)
 }
 
-func resolveRoots(o Options) (Options, error) {
-	input, err := resolveRoot(o.Input)
+func resolveRoots(c Config) (Config, error) {
+	input, err := resolveRoot(c.Input)
 	if err != nil {
-		return o, err
+		return c, err
 	}
-	output, err := resolveRoot(o.Output)
+	output, err := resolveRoot(c.Output)
 	if err != nil {
-		return o, err
+		return c, err
 	}
-	o.Input, o.Output = input, output
-	return o, nil
+	c.Input, c.Output = input, output
+	return c, nil
 }
 
 // Upload hardlinks the files of Input into Output, honoring the ignore rules.
 // Directories are created, including empty ones. When an entry already exists
-// under the same relative path it is reported and skipped; with Force it is
-// replaced by a hardlink or directory from the source.
-func Upload(o Options) error {
-	o, err := resolveRoots(o)
+// under the same relative path it is reported in the UploadResult and skipped;
+// with Force it is replaced by a hardlink or directory from the source.
+func Upload(c Config, opts UploadOptions) (UploadResult, error) {
+	c, err := resolveRoots(c)
 	if err != nil {
-		return err
+		return UploadResult{}, err
 	}
-	matcher, err := o.ignore()
+	matcher, err := c.ignore()
 	if err != nil {
-		return err
+		return UploadResult{}, err
 	}
-	return Walk(o.Input, func(path string, entry fs.DirEntry, rel string) error {
+	u := &uploader{Config: c, UploadOptions: opts}
+	err = Walk(c.Input, func(path string, entry fs.DirEntry, rel string) error {
 		if entry.Type()&fs.ModeSymlink != 0 {
-			o.logf("skipped symlink: %s", filepath.ToSlash(rel))
+			u.logf("skipped symlink: %s", filepath.ToSlash(rel))
 			return nil
 		}
 		if excluded, dir := skip(matcher, path, entry); excluded {
 			if dir {
-				o.logf("skipped directory: %s", filepath.ToSlash(rel))
+				u.logf("skipped directory: %s", filepath.ToSlash(rel))
 				return filepath.SkipDir
 			}
-			o.logf("skipped file: %s", filepath.ToSlash(rel))
+			u.logf("skipped file: %s", filepath.ToSlash(rel))
 			return nil
 		}
-		return o.uploadEntry(path, filepath.Join(o.Output, rel), entry, rel)
+		return u.uploadEntry(path, filepath.Join(u.Output, rel), entry, rel)
 	})
+	if err != nil {
+		// Conflicts found before the error are still reported.
+		return UploadResult{Conflicts: u.conflicts}, err
+	}
+	return UploadResult{Conflicts: u.conflicts}, nil
+}
+
+// uploader carries the per-upload options and collected conflicts alongside
+// the shared Config, so the implementation helpers keep a single receiver.
+type uploader struct {
+	Config
+	UploadOptions
+	conflicts []string
+}
+
+func (u *uploader) reportConflict(rel string) {
+	u.conflicts = append(u.conflicts, rel)
 }
 
 // uploadEntry creates the drive-side entry for one source path, or reconciles
 // it with an entry that is already there.
-func (o Options) uploadEntry(sourcePath, goalPath string, entry fs.DirEntry, rel string) error {
+func (u *uploader) uploadEntry(sourcePath, goalPath string, entry fs.DirEntry, rel string) error {
 	relSlash := filepath.ToSlash(rel)
-	goalInfo, goalErr := os.Lstat(goalPath)
+	goalInfo, goalErr := u.lstat(goalPath)
 	if goalErr != nil && !errors.Is(goalErr, fs.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", goalPath, goalErr)
 	}
 	if errors.Is(goalErr, fs.ErrNotExist) {
 		if entry.IsDir() {
-			return o.createDirectory(goalPath, rel)
+			return u.createDirectory(goalPath, rel)
 		}
-		if err := os.MkdirAll(filepath.Dir(goalPath), 0o755); err != nil {
+		if err := u.mkdirAll(filepath.Dir(goalPath), 0o755); err != nil {
 			return err
 		}
-		return o.installFile(sourcePath, goalPath, relSlash)
+		return u.installFile(sourcePath, goalPath, relSlash)
 	}
-	return o.reconcile(sourcePath, goalPath, entry, goalInfo, relSlash)
+	return u.reconcile(sourcePath, goalPath, entry, goalInfo, relSlash)
 }
 
-func (o Options) createDirectory(goalPath, rel string) error {
-	if err := os.MkdirAll(goalPath, 0o755); err != nil {
+func (u *uploader) createDirectory(goalPath, rel string) error {
+	if err := u.mkdirAll(goalPath, 0o755); err != nil {
 		return err
 	}
-	o.logf("created directory: %s", filepath.ToSlash(rel))
+	u.logf("created directory: %s", filepath.ToSlash(rel))
 	return nil
 }
 
 // reconcile handles an existing drive-side entry. Without Force, conflicts are
 // reported and skipped. With Force the entry is replaced; a directory is never
 // deleted to make room for a file, that conflict must be resolved by hand.
-func (o Options) reconcile(sourcePath, goalPath string, entry fs.DirEntry, goalInfo os.FileInfo, rel string) error {
+func (u *uploader) reconcile(sourcePath, goalPath string, entry fs.DirEntry, goalInfo os.FileInfo, rel string) error {
 	if entry.IsDir() {
 		if goalInfo.IsDir() {
 			return nil
 		}
-		if !o.Force {
-			o.reportConflict(rel)
+		if !u.Force {
+			u.reportConflict(rel)
 			return nil
 		}
-		o.logf("replacing a file with a directory: %s", rel)
+		u.logf("replacing a file with a directory: %s", rel)
 		if err := os.Remove(goalPath); err != nil {
 			return fmt.Errorf("replace %s: %w", goalPath, err)
 		}
-		return o.createDirectory(goalPath, rel)
+		return u.createDirectory(goalPath, rel)
 	}
 	if goalInfo.IsDir() {
-		if !o.Force {
-			o.reportConflict(rel)
+		if !u.Force {
+			u.reportConflict(rel)
 			return nil
 		}
 		return fmt.Errorf("cannot replace directory %s with a file; remove it manually", rel)
 	}
 	if goalInfo.Mode()&fs.ModeSymlink == 0 {
-		sourceInfo, err := o.stat(sourcePath)
+		sourceInfo, err := u.stat(sourcePath)
 		if err != nil {
 			return fmt.Errorf("stat %s: %w", sourcePath, err)
 		}
-		if o.inSync(sourcePath, goalPath, sourceInfo, goalInfo) {
+		if u.inSync(sourcePath, goalPath, sourceInfo, goalInfo) {
 			return nil
 		}
 	}
-	if !o.Force {
-		o.reportConflict(rel)
+	if !u.Force {
+		u.reportConflict(rel)
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(goalPath), 0o755); err != nil {
+	if err := u.mkdirAll(filepath.Dir(goalPath), 0o755); err != nil {
 		return err
 	}
-	return o.installFile(sourcePath, goalPath, rel)
+	return u.installFile(sourcePath, goalPath, rel)
 }
 
 // inSync reports whether the goal already matches, from Upload's point of
 // view: in link mode only a hardlink counts, while copy mode also accepts an
 // up-to-date copy.
-func (o Options) inSync(sourcePath, goalPath string, sourceInfo, goalInfo os.FileInfo) bool {
+func (u *uploader) inSync(sourcePath, goalPath string, sourceInfo, goalInfo os.FileInfo) bool {
 	if os.SameFile(sourceInfo, goalInfo) {
 		return true
 	}
-	return o.Copy && filesInSync(sourcePath, goalPath, sourceInfo, goalInfo)
+	return u.Copy && filesInSync(sourcePath, goalPath, sourceInfo, goalInfo)
 }
 
 // installFile places the source file at goalPath as a hardlink, or as a copy
 // in copy mode. It always works through a temporary sibling and a rename, so
 // an existing drive file is never missing while the new one is prepared.
-func (o Options) installFile(sourcePath, goalPath, rel string) error {
+func (u *uploader) installFile(sourcePath, goalPath, rel string) error {
 	tmp, err := os.CreateTemp(filepath.Dir(goalPath), ".driveignore-*")
 	if err != nil {
 		return fmt.Errorf("install %s: %w", rel, err)
@@ -234,23 +311,23 @@ func (o Options) installFile(sourcePath, goalPath, rel string) error {
 	_ = os.Remove(tmpName) // free the name for the link or copy
 
 	var installErr error
-	if o.Copy {
-		installErr = copyFile(sourcePath, tmpName)
+	if u.Copy {
+		installErr = u.copyFile(sourcePath, tmpName)
 	} else {
-		installErr = o.link(sourcePath, tmpName)
+		installErr = u.link(sourcePath, tmpName)
 	}
 	if installErr != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("install %s: %w", rel, installErr)
 	}
-	if err := os.Rename(tmpName, goalPath); err != nil {
+	if err := u.rename(tmpName, goalPath); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("install %s: %w", rel, err)
 	}
-	if o.Copy {
-		o.logf("copied file: %s", rel)
+	if u.Copy {
+		u.logf("copied file: %s", rel)
 	} else {
-		o.logf("created hard link: %s", rel)
+		u.logf("created hard link: %s", rel)
 	}
 	return nil
 }
@@ -341,72 +418,79 @@ func sameContent(pathA, pathB string) bool {
 }
 
 // Clean removes files from Output whose source counterpart is missing or is a
-// different file. Directories are left in place. Stat errors other than
-// not-exist abort the walk instead of being treated as missing files, so a
-// transient error can never delete data. With PruneIgnored, files that the
-// ignore rules exclude are removed as well; DryRun reports without removing.
-func Clean(o Options) ([]string, error) {
-	o, err := resolveRoots(o)
+// different file. Directories are left in place. With PruneIgnored, files that
+// the ignore rules exclude are removed as well; DryRun reports without
+// removing.
+func Clean(c Config, opts CleanOptions) ([]string, error) {
+	c, err := resolveRoots(c)
 	if err != nil {
 		return nil, err
 	}
 	var ignored Matcher
-	if o.PruneIgnored {
-		matcher, err := LoadIgnore(o.GlobalIgnorePath, o.Input, o.MergeIgnores)
-		switch {
-		case errors.Is(err, ErrNoIgnore):
-			// nothing is ignored without an ignore file
-		case err != nil:
+	if opts.PruneIgnored {
+		matcher, _, err := c.rules()
+		if err != nil {
 			return nil, err
-		default:
-			ignored = matcher
 		}
+		ignored = matcher // nil means nothing is ignored
 	}
 	var removed []string
-	err = Walk(o.Output, func(path string, entry fs.DirEntry, rel string) error {
-		if entry.Type()&fs.ModeSymlink != 0 {
-			return nil
+	err = Walk(c.Output, func(path string, entry fs.DirEntry, rel string) error {
+		didRemove, err := c.removeEntry(path, entry, rel, ignored, opts.DryRun)
+		if err != nil {
+			return err
 		}
-		if entry.IsDir() {
-			return nil
-		}
-		sourcePath := filepath.Join(o.Input, rel)
-		sourceInfo, sourceErr := o.stat(sourcePath)
-		if sourceErr != nil && !errors.Is(sourceErr, fs.ErrNotExist) {
-			return fmt.Errorf("stat %s: %w", sourcePath, sourceErr)
-		}
-		if sourceErr == nil {
-			entryInfo, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			keep := filesInSync(sourcePath, path, sourceInfo, entryInfo)
-			pruned := ignored != nil && ignored.Match(sourcePath, false)
-			if keep && !pruned {
-				return nil
-			}
-		}
-		if !o.DryRun {
-			if err := os.Remove(path); err != nil {
-				return fmt.Errorf("remove %s: %w", filepath.ToSlash(rel), err)
-			}
-		}
-		removed = append(removed, filepath.ToSlash(rel))
-		if o.DryRun {
-			o.logf("would remove: %s", filepath.ToSlash(rel))
-		} else {
-			o.logf("removed: %s", filepath.ToSlash(rel))
+		if didRemove {
+			removed = append(removed, filepath.ToSlash(rel))
 		}
 		return nil
 	})
 	return removed, err
 }
 
+// removeEntry reports whether the drive-side entry at path is stale and
+// removes it unless dryRun is set. A stat error other than not-exist aborts
+// instead of being treated as a missing file, so a transient error can never
+// delete data.
+func (c Config) removeEntry(path string, entry fs.DirEntry, rel string, ignored Matcher, dryRun bool) (bool, error) {
+	if entry.Type()&fs.ModeSymlink != 0 || entry.IsDir() {
+		return false, nil
+	}
+	sourcePath := filepath.Join(c.Input, rel)
+	sourceInfo, sourceErr := c.stat(sourcePath)
+	if sourceErr != nil && !errors.Is(sourceErr, fs.ErrNotExist) {
+		return false, fmt.Errorf("stat %s: %w", sourcePath, sourceErr)
+	}
+	if sourceErr == nil {
+		entryInfo, err := entry.Info()
+		if err != nil {
+			return false, err
+		}
+		keep := filesInSync(sourcePath, path, sourceInfo, entryInfo)
+		pruned := ignored != nil && ignored.Match(sourcePath, false)
+		if keep && !pruned {
+			return false, nil
+		}
+	}
+	relSlash := filepath.ToSlash(rel)
+	if !dryRun {
+		if err := os.Remove(path); err != nil {
+			return false, fmt.Errorf("remove %s: %w", relSlash, err)
+		}
+	}
+	if dryRun {
+		c.logf("would remove: %s", relSlash)
+	} else {
+		c.logf("removed: %s", relSlash)
+	}
+	return true, nil
+}
+
 // sameEntry reports whether the entry and its counterpart at other describe
 // the same file or directory. A missing counterpart yields false with a nil
 // error so callers can treat it as a difference.
-func sameEntry(o Options, entryPath string, entry fs.DirEntry, other string) (bool, error) {
-	otherInfo, err := o.stat(other)
+func sameEntry(c Config, entryPath string, entry fs.DirEntry, other string) (bool, error) {
+	otherInfo, err := c.stat(other)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, nil
@@ -428,17 +512,17 @@ func sameEntry(o Options, entryPath string, entry fs.DirEntry, other string) (bo
 
 // Diff walks both sides and reports paths that exist on only one of them.
 // Ignore rules apply to the Input side only.
-func Diff(o Options) (DiffResult, error) {
-	o, err := resolveRoots(o)
+func Diff(c Config) (DiffResult, error) {
+	c, err := resolveRoots(c)
 	if err != nil {
 		return DiffResult{}, err
 	}
-	matcher, err := o.ignore()
+	matcher, err := c.ignore()
 	if err != nil {
 		return DiffResult{}, err
 	}
 	var res DiffResult
-	err = Walk(o.Input, func(path string, entry fs.DirEntry, rel string) error {
+	err = Walk(c.Input, func(path string, entry fs.DirEntry, rel string) error {
 		if entry.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
@@ -448,7 +532,7 @@ func Diff(o Options) (DiffResult, error) {
 			}
 			return nil
 		}
-		same, err := sameEntry(o, path, entry, filepath.Join(o.Output, rel))
+		same, err := sameEntry(c, path, entry, filepath.Join(c.Output, rel))
 		if err != nil {
 			return err
 		}
@@ -460,11 +544,11 @@ func Diff(o Options) (DiffResult, error) {
 	if err != nil {
 		return res, err
 	}
-	err = Walk(o.Output, func(path string, entry fs.DirEntry, rel string) error {
+	err = Walk(c.Output, func(path string, entry fs.DirEntry, rel string) error {
 		if entry.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
-		same, err := sameEntry(o, path, entry, filepath.Join(o.Input, rel))
+		same, err := sameEntry(c, path, entry, filepath.Join(c.Input, rel))
 		if err != nil {
 			return err
 		}
@@ -477,12 +561,13 @@ func Diff(o Options) (DiffResult, error) {
 }
 
 // Unify uploads with Force and then cleans, so Output mirrors Input minus the
-// ignored files.
-func Unify(o Options) error {
-	o.Force = true
-	if err := Upload(o); err != nil {
-		return err
+// ignored files. The upload half's conflicts are returned; the removed list is
+// discarded.
+func Unify(c Config, opts UnifyOptions) (UploadResult, error) {
+	res, err := Upload(c, UploadOptions{Force: true, Copy: opts.Copy})
+	if err != nil {
+		return res, err
 	}
-	_, err := Clean(o)
-	return err
+	_, err = Clean(c, CleanOptions{PruneIgnored: opts.PruneIgnored})
+	return res, err
 }
