@@ -590,7 +590,10 @@ func TestCleanKeepsInSyncCopiesAndRemovesStaleOnes(t *testing.T) {
 	assertNotExist(t, filepath.Join(out, "keep.txt"))
 }
 
-func TestCleanAbortsWhenSourceComparisonFails(t *testing.T) {
+// unreadableCopy uploads a copied file, keeps the content comparison in its
+// racy-timestamp branch, and makes the source unreadable.
+func unreadableCopy(t *testing.T) Config {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("permission bits do not block reads on Windows")
 	}
@@ -600,16 +603,19 @@ func TestCleanAbortsWhenSourceComparisonFails(t *testing.T) {
 	cfg := baseConfig(t, src, out)
 	runUpload(t, cfg, UploadOptions{Copy: true})
 
-	// Keep the comparison in its racy-timestamp branch, then make the source
-	// unreadable: the drive copy must survive.
 	now := time.Now()
 	require.NoError(t, os.Chtimes(filepath.Join(src, "keep.txt"), now, now))
 	require.NoError(t, os.Chmod(filepath.Join(src, "keep.txt"), 0o000))
+	return cfg
+}
+
+func TestCleanAbortsWhenSourceComparisonFails(t *testing.T) {
+	cfg := unreadableCopy(t)
 
 	removed, err := Clean(cfg, CleanOptions{})
 	require.Error(t, err)
 	require.Empty(t, removed)
-	require.FileExists(t, filepath.Join(out, "keep.txt"), "an unreadable source must never cost the drive copy")
+	require.FileExists(t, filepath.Join(cfg.Output, "keep.txt"), "an unreadable source must never cost the drive copy")
 }
 
 func TestDiffTreatsCopiesAsInSync(t *testing.T) {
@@ -626,20 +632,7 @@ func TestDiffTreatsCopiesAsInSync(t *testing.T) {
 }
 
 func TestDiffFailsWhenSourceComparisonFails(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("permission bits do not block reads on Windows")
-	}
-	src, out := t.TempDir(), t.TempDir()
-	write(t, filepath.Join(src, ".driveignore"), "")
-	write(t, filepath.Join(src, "keep.txt"), "keep")
-	cfg := baseConfig(t, src, out)
-	runUpload(t, cfg, UploadOptions{Copy: true})
-
-	now := time.Now()
-	require.NoError(t, os.Chtimes(filepath.Join(src, "keep.txt"), now, now))
-	require.NoError(t, os.Chmod(filepath.Join(src, "keep.txt"), 0o000))
-
-	_, err := Diff(cfg)
+	_, err := Diff(unreadableCopy(t))
 	require.Error(t, err)
 }
 
