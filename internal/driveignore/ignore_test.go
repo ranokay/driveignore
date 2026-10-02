@@ -27,7 +27,7 @@ func TestIgnoreMatchesGitignoreSemantics(t *testing.T) {
 	}, "\n") + "\n"
 	write(t, filepath.Join(local, ".driveignore"), patterns)
 
-	matcher, err := LoadIgnore(missingGlobal(t), local, false)
+	matcher, _, err := LoadIgnore(local, false, globalFn(missingGlobal(t)))
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -66,7 +66,7 @@ func TestIgnoreSkipsCommentsAndBlankLines(t *testing.T) {
 	local := t.TempDir()
 	write(t, filepath.Join(local, ".driveignore"), "# comment\n\n*.tmp\n\\#hashed.txt\n")
 
-	matcher, err := LoadIgnore(missingGlobal(t), local, false)
+	matcher, _, err := LoadIgnore(local, false, globalFn(missingGlobal(t)))
 	require.NoError(t, err)
 	require.True(t, matcher.Match(filepath.Join(local, "x.tmp"), false))
 	require.True(t, matcher.Match(filepath.Join(local, "#hashed.txt"), false))
@@ -78,7 +78,7 @@ func TestNestedDriveignoreAppliesToItsSubtree(t *testing.T) {
 	write(t, filepath.Join(local, ".driveignore"), "*.log\n")
 	write(t, filepath.Join(local, "sub", ".driveignore"), "build/\n!keep.log\n")
 
-	matcher, err := LoadIgnore(missingGlobal(t), local, false)
+	matcher, _, err := LoadIgnore(local, false, globalFn(missingGlobal(t)))
 	require.NoError(t, err)
 
 	require.True(t, matcher.Match(filepath.Join(local, "app.log"), false), "root rule applies at the root")
@@ -93,7 +93,7 @@ func TestNestedDriveignoreAnchoredPatterns(t *testing.T) {
 	local := t.TempDir()
 	write(t, filepath.Join(local, "sub", ".driveignore"), "/rooted.txt\n")
 
-	matcher, err := LoadIgnore(missingGlobal(t), local, false)
+	matcher, _, err := LoadIgnore(local, false, globalFn(missingGlobal(t)))
 	require.NoError(t, err)
 
 	require.True(t, matcher.Match(filepath.Join(local, "sub", "rooted.txt"), false))
@@ -105,7 +105,7 @@ func TestLoadIgnoreAcceptsNestedOnlyConfiguration(t *testing.T) {
 	local := t.TempDir()
 	write(t, filepath.Join(local, "sub", ".driveignore"), "*.tmp\n")
 
-	matcher, err := LoadIgnore(missingGlobal(t), local, false)
+	matcher, _, err := LoadIgnore(local, false, globalFn(missingGlobal(t)))
 	require.NoError(t, err)
 	require.True(t, matcher.Match(filepath.Join(local, "sub", "x.tmp"), false))
 	require.False(t, matcher.Match(filepath.Join(local, "x.tmp"), false))
@@ -116,7 +116,7 @@ func TestIgnoreHandlesLinesLongerThanScannerLimit(t *testing.T) {
 	long := strings.Repeat("x", 70_000)
 	write(t, filepath.Join(local, ".driveignore"), long+"\n*.tmp\n")
 
-	matcher, err := LoadIgnore(missingGlobal(t), local, false)
+	matcher, _, err := LoadIgnore(local, false, globalFn(missingGlobal(t)))
 	require.NoError(t, err)
 	require.True(t, matcher.Match(filepath.Join(local, "file.tmp"), false), "patterns after a long line must still apply")
 }

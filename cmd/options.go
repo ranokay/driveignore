@@ -9,26 +9,20 @@ import (
 	"github.com/ranokay/driveignore/internal/driveignore"
 )
 
-func newOptions(cmd *cobra.Command, input, output string) (driveignore.Options, error) {
+func newOptions(cmd *cobra.Command, input, output string) (driveignore.Config, error) {
 	if err := requireDir(input); err != nil {
-		return driveignore.Options{}, err
+		return driveignore.Config{}, err
 	}
-	globalPath, err := driveignore.GlobalIgnorePath()
-	if err != nil {
-		return driveignore.Options{}, err
-	}
-	opts := driveignore.Options{
-		Input:            input,
-		Output:           output,
-		GlobalIgnorePath: globalPath,
-		Out:              cmd.OutOrStdout(),
+	cfg := driveignore.Config{
+		Input:  input,
+		Output: output,
 	}
 	if verbose {
-		opts.Log = func(format string, args ...any) {
+		cfg.Log = func(format string, args ...any) {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), format+"\n", args...)
 		}
 	}
-	return opts, nil
+	return cfg, nil
 }
 
 // singleDirArg validates that exactly one argument is given and that it names

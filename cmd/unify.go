@@ -38,14 +38,14 @@ With --prune-ignored, it also removes files excluded by .driveignore,
 even when they exist in the source.`,
 		Args: singleDirArg(),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts, err := newOptions(cmd, input, args[0])
+			cfg, err := newOptions(cmd, input, args[0])
 			if err != nil {
 				return err
 			}
-			opts.MergeIgnores = mergeIgnores
-			opts.PruneIgnored = pruneIgnored
-			opts.Copy = copyFiles
-			return driveignore.Unify(opts)
+			cfg.MergeIgnores = mergeIgnores
+			res, err := driveignore.Unify(cfg, driveignore.UnifyOptions{PruneIgnored: pruneIgnored, Copy: copyFiles})
+			printConflicts(cmd.OutOrStdout(), res.Conflicts)
+			return err
 		},
 	}
 	cmd.Flags().StringVarP(&input, "input", "i", ".", "Input directory of the files to be uploaded")

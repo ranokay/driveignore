@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -41,4 +42,25 @@ func TestExecuteExitCodes(t *testing.T) {
 			require.Equal(t, tc.want, execute())
 		})
 	}
+}
+
+func TestUploadPrintsConflictMessage(t *testing.T) {
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, ".driveignore"), nil, 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "same.txt"), []byte("new"), 0o644))
+	out := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(out, "same.txt"), []byte("old"), 0o644))
+
+	var stdout bytes.Buffer
+	rootCmd.SetArgs([]string{"upload", out, "-i", src})
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(io.Discard)
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+	})
+
+	require.Equal(t, 0, execute())
+	require.Equal(t, "cannot upload 'same.txt'. A file with the same name already exists.\n", stdout.String())
 }

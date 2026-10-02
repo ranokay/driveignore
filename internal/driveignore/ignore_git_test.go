@@ -76,7 +76,7 @@ func TestIgnoreMatchesGitCheckIgnore(t *testing.T) {
 		write(t, full, "")
 	}
 
-	matcher, err := LoadIgnore(missingGlobal(t), local, false)
+	matcher, _, err := LoadIgnore(local, false, globalFn(missingGlobal(t)))
 	require.NoError(t, err)
 
 	gitCheck := func(path string) (bool, error) {

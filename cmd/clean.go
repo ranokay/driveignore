@@ -40,13 +40,11 @@ even when the source still contains them.
 `,
 		Args: singleDirArg(),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts, err := newOptions(cmd, input, args[0])
+			cfg, err := newOptions(cmd, input, args[0])
 			if err != nil {
 				return err
 			}
-			opts.DryRun = dryRun
-			opts.PruneIgnored = pruneIgnored
-			removed, err := driveignore.Clean(opts)
+			removed, err := driveignore.Clean(cfg, driveignore.CleanOptions{DryRun: dryRun, PruneIgnored: pruneIgnored})
 			if err != nil {
 				return err
 			}
