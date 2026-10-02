@@ -95,22 +95,27 @@ func TestNextWatchInterval(t *testing.T) {
 	tests := []struct {
 		name       string
 		prev       time.Duration
+		base       time.Duration
 		hadActions bool
 		failed     bool
 		want       time.Duration
 	}{
-		{"idle doubles from the base", watchBaseInterval, false, false, 2 * watchBaseInterval},
-		{"idle stops at the maximum", 40 * time.Second, false, false, watchMaxInterval},
-		{"idle stays at the maximum", watchMaxInterval, false, false, watchMaxInterval},
-		{"actions reset to the base", watchMaxInterval, true, false, watchBaseInterval},
-		{"a failure doubles", watchBaseInterval, false, true, 2 * watchBaseInterval},
-		{"a failure stops at the maximum", 45 * time.Second, false, true, watchMaxInterval},
-		{"a failure backs off even after progress", watchBaseInterval, true, true, 2 * watchBaseInterval},
-		{"a zero interval floors at the base", 0, false, false, watchBaseInterval},
+		{"idle doubles from the base", watchBaseInterval, watchBaseInterval, false, false, 2 * watchBaseInterval},
+		{"idle stops at the maximum", 40 * time.Second, watchBaseInterval, false, false, watchMaxInterval},
+		{"idle stays at the maximum", watchMaxInterval, watchBaseInterval, false, false, watchMaxInterval},
+		{"actions reset to the base", watchMaxInterval, watchBaseInterval, true, false, watchBaseInterval},
+		{"actions reset to a custom base", watchMaxInterval, 30 * time.Second, true, false, 30 * time.Second},
+		{"a custom base lowers the floor", 0, time.Second, false, false, time.Second},
+		{"idle doubles a custom base", 5 * time.Second, 5 * time.Second, false, false, 10 * time.Second},
+		{"idle caps a custom base at the maximum", 40 * time.Second, 30 * time.Second, false, false, watchMaxInterval},
+		{"a failure doubles", watchBaseInterval, watchBaseInterval, false, true, 2 * watchBaseInterval},
+		{"a failure stops at the maximum", 45 * time.Second, watchBaseInterval, false, true, watchMaxInterval},
+		{"a failure backs off even after progress", watchBaseInterval, watchBaseInterval, true, true, 2 * watchBaseInterval},
+		{"a zero interval floors at the base", 0, watchBaseInterval, false, false, watchBaseInterval},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, nextWatchInterval(tt.prev, tt.hadActions, tt.failed))
+			require.Equal(t, tt.want, nextWatchInterval(tt.prev, tt.base, tt.hadActions, tt.failed))
 		})
 	}
 }

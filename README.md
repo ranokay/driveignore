@@ -108,7 +108,7 @@ Every command documents its flags in `--help`. The shared flags are:
   without removing them; `watch` prints every action a pass would take without
   changing anything
 - `--once`, `--one-way`, `--interval` (`watch`): run a single pass, make the
-  source authoritative, or set the starting poll interval
+  source authoritative, or set the base poll interval
 - `--prune-ignored` (`clean`, `unify`): also remove drive files excluded by
   `.driveignore`, even when the source still contains them
 - `--copy` (`upload`, `unify`): copy files instead of hardlinking them, for
@@ -141,8 +141,9 @@ run when it cannot.
 
 Run `--once` for a single pass, `--dry-run` to print exactly what a pass would
 do without changing anything, and `--one-way` to make the source authoritative.
-Passes start 2 seconds apart, back off to 60 seconds while idle, and return to
-2 seconds when changes flow; `--interval` changes the starting value.
+Passes run `--interval` apart (2 seconds by default) while changes keep
+flowing, and back off towards 60 seconds while idle or after a failure; a pass
+that acted returns to the base.
 
 ## global .driveignore
 

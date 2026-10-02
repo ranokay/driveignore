@@ -78,7 +78,7 @@ print what a pass would do without changing anything.`,
 	cmd.Flags().BoolVar(&once, "once", false, "Run a single reconcile pass and exit")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the actions a pass would take without changing anything")
 	cmd.Flags().BoolVar(&oneWay, "one-way", false, "Only propagate local changes; the source tree is authoritative")
-	cmd.Flags().DurationVar(&interval, "interval", watchBaseInterval, "Time between reconcile passes (maximum 60s)")
+	cmd.Flags().DurationVar(&interval, "interval", watchBaseInterval, "Base time between passes while changes flow (idle backs off to 60s)")
 	return cmd
 }
 
@@ -116,30 +116,32 @@ func runWatchPass(cfg driveignore.Config, statePath string, opts driveignore.Wat
 	return report, nil
 }
 
-// watchLoop polls until the process is interrupted. A failed pass is reported
-// and backed off; it never stops the loop.
-func watchLoop(cmd *cobra.Command, cfg driveignore.Config, statePath string, opts driveignore.WatchOptions, interval time.Duration) error {
+// watchLoop polls until the process is interrupted. base is the cadence while
+// changes flow and the floor for the backoff; a failed pass is reported and
+// backed off, never stopping the loop.
+func watchLoop(cmd *cobra.Command, cfg driveignore.Config, statePath string, opts driveignore.WatchOptions, base time.Duration) error {
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+	interval := base
 	for {
 		report, err := runWatchPass(cfg, statePath, opts, out, verbose)
 		if err != nil {
 			_, _ = fmt.Fprintln(errOut, "watch:", err)
 		}
-		interval = nextWatchInterval(interval, len(report.Actions) > 0, err != nil)
+		interval = nextWatchInterval(interval, base, len(report.Actions) > 0, err != nil)
 		time.Sleep(interval)
 	}
 }
 
-// nextWatchInterval picks the delay before the next pass: the base after a
-// pass that made progress, doubling towards the maximum while idle or after a
-// failure.
-func nextWatchInterval(prev time.Duration, hadActions, failed bool) time.Duration {
+// nextWatchInterval picks the delay before the next pass: base after a pass
+// that made progress, doubling towards the maximum while idle or after a
+// failure, never going below base.
+func nextWatchInterval(prev, base time.Duration, hadActions, failed bool) time.Duration {
 	if !failed && hadActions {
-		return watchBaseInterval
+		return base
 	}
 	next := prev * 2
-	if next < watchBaseInterval {
-		next = watchBaseInterval
+	if next < base {
+		next = base
 	}
 	if next > watchMaxInterval {
 		next = watchMaxInterval
