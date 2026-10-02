@@ -590,6 +590,28 @@ func TestCleanKeepsInSyncCopiesAndRemovesStaleOnes(t *testing.T) {
 	assertNotExist(t, filepath.Join(out, "keep.txt"))
 }
 
+func TestCleanAbortsWhenSourceComparisonFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits do not block reads on Windows")
+	}
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "keep.txt"), "keep")
+	cfg := baseConfig(t, src, out)
+	runUpload(t, cfg, UploadOptions{Copy: true})
+
+	// Keep the comparison in its racy-timestamp branch, then make the source
+	// unreadable: the drive copy must survive.
+	now := time.Now()
+	require.NoError(t, os.Chtimes(filepath.Join(src, "keep.txt"), now, now))
+	require.NoError(t, os.Chmod(filepath.Join(src, "keep.txt"), 0o000))
+
+	removed, err := Clean(cfg, CleanOptions{})
+	require.Error(t, err)
+	require.Empty(t, removed)
+	require.FileExists(t, filepath.Join(out, "keep.txt"), "an unreadable source must never cost the drive copy")
+}
+
 func TestDiffTreatsCopiesAsInSync(t *testing.T) {
 	src, out := t.TempDir(), t.TempDir()
 	write(t, filepath.Join(src, ".driveignore"), "")
@@ -601,6 +623,24 @@ func TestDiffTreatsCopiesAsInSync(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, res.Missing)
 	require.Empty(t, res.Old)
+}
+
+func TestDiffFailsWhenSourceComparisonFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits do not block reads on Windows")
+	}
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "")
+	write(t, filepath.Join(src, "keep.txt"), "keep")
+	cfg := baseConfig(t, src, out)
+	runUpload(t, cfg, UploadOptions{Copy: true})
+
+	now := time.Now()
+	require.NoError(t, os.Chtimes(filepath.Join(src, "keep.txt"), now, now))
+	require.NoError(t, os.Chmod(filepath.Join(src, "keep.txt"), 0o000))
+
+	_, err := Diff(cfg)
+	require.Error(t, err)
 }
 
 func TestUploadCopyFailureKeepsExistingFile(t *testing.T) {
