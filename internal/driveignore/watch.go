@@ -44,8 +44,9 @@ const (
 )
 
 // Action is one classified path: Kind is what a pass would do, Path is the
-// relative path with forward slashes, Detail carries the "self-heal" direction
-// of a relink ("local wins" or "drive wins") and is empty otherwise.
+// relative path with forward slashes, and Detail names the winning side of a
+// self-heal relink or a conflict ("local wins" or "drive wins"); it is empty
+// otherwise.
 type Action struct {
 	Kind   ActionKind
 	Path   string
@@ -274,7 +275,7 @@ func (r *watchRun) classify(rel string) (Action, bool) {
 		if r.fresh(local.info) || r.fresh(out.info) {
 			return Action{ActionDeferred, path, ""}, true
 		}
-		return Action{ActionConflict, path, ""}, true
+		return Action{ActionConflict, path, conflictDetail(local.info, out.info)}, true
 
 	case localOK && !outOK:
 		if local.isDir {
@@ -340,6 +341,15 @@ func (r *watchRun) relink(path string, source os.FileInfo, detail string) Action
 	return Action{ActionRelinked, path, detail}
 }
 
+// conflictDetail names the side a conflict resolves to: the newest mtime
+// wins, and equal times favor local so the outcome is deterministic.
+func conflictDetail(local, out os.FileInfo) string {
+	if out.ModTime().After(local.ModTime()) {
+		return "drive wins"
+	}
+	return "local wins"
+}
+
 // link installs a local-only file on the drive side.
 func (r *watchRun) link(path string, source os.FileInfo) Action {
 	if r.fresh(source) {
@@ -402,14 +412,92 @@ func (r *watchRun) apply(report Report) (unsettled, deleted map[string]bool, err
 			}
 			deleted[rel] = true
 			r.cfg.logf("removed: %s", action.Path)
+		case ActionConflict:
+			if err := r.resolveConflict(action); err != nil {
+				return nil, nil, err
+			}
 		default:
-			// Report-only kinds (conflict, deferred, type-conflict) run again
-			// next pass; their paths and ancestors must stay unpruned.
+			// Report-only kinds (deferred, type-conflict) run again next
+			// pass; their paths and ancestors must stay unpruned.
 			r.cfg.logf("left for a later pass: %s: %s", action.Kind, action.Path)
 			markUnsettled(unsettled, action.Path)
 		}
 	}
 	return unsettled, deleted, nil
+}
+
+// resolveConflict applies one ActionConflict. Detail names the winning side;
+// the losing file is first preserved as a hardlinked copy on both sides, then
+// the winner's content is linked at the original path on the losing side, so
+// both versions of the file survive the pass.
+func (r *watchRun) resolveConflict(action Action) error {
+	rel := filepath.FromSlash(action.Path)
+	localPath, outPath := filepath.Join(r.cfg.Input, rel), filepath.Join(r.cfg.Output, rel)
+	winnerPath, loserPath, loserSide := localPath, outPath, "drive"
+	loserRoot, otherRoot := r.cfg.Output, r.cfg.Input
+	if action.Detail == "drive wins" {
+		winnerPath, loserPath = outPath, localPath
+		loserSide = "local"
+		loserRoot, otherRoot = r.cfg.Input, r.cfg.Output
+	}
+	loserInfo, err := r.cfg.stat(loserPath)
+	if err != nil {
+		return fmt.Errorf("conflict %s: %w", action.Path, err)
+	}
+	copyRel, err := r.conflictCopyPath(action.Path, loserInfo, loserSide)
+	if err != nil {
+		return err
+	}
+	loserCopy := filepath.Join(loserRoot, filepath.FromSlash(copyRel))
+	otherCopy := filepath.Join(otherRoot, filepath.FromSlash(copyRel))
+	if err := installLink(r.cfg, loserPath, loserCopy, copyRel); err != nil {
+		return err
+	}
+	if err := installLink(r.cfg, loserCopy, otherCopy, copyRel); err != nil {
+		return err
+	}
+	if err := installLink(r.cfg, winnerPath, loserPath, action.Path); err != nil {
+		return err
+	}
+	r.cfg.logf("kept conflict copy: %s", copyRel)
+	return nil
+}
+
+// conflictCopyPath names the copy preserving a conflict's losing side: the
+// full file name plus .sync-conflict-<side>-<loser mtime in UTC>, with -1,
+// -2, ... appended after the timestamp while the name is taken on either
+// side. The losing file's mtime keeps names deterministic (no clock read).
+func (r *watchRun) conflictCopyPath(rel string, loser os.FileInfo, side string) (string, error) {
+	base := rel + ".sync-conflict-" + side + "-" + loser.ModTime().UTC().Format("20060102T150405")
+	for i := 0; ; i++ {
+		name := base
+		if i > 0 {
+			name = fmt.Sprintf("%s-%d", base, i)
+		}
+		free, err := r.conflictNameFree(name)
+		if err != nil {
+			return "", err
+		}
+		if free {
+			return name, nil
+		}
+	}
+}
+
+// conflictNameFree reports whether rel is absent on both sides. An lstat error
+// other than not-exist aborts: a copy that might collide must not be created.
+func (r *watchRun) conflictNameFree(rel string) (bool, error) {
+	relPath := filepath.FromSlash(rel)
+	for _, root := range []string{r.cfg.Input, r.cfg.Output} {
+		_, err := r.cfg.lstat(filepath.Join(root, relPath))
+		if err == nil {
+			return false, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return false, fmt.Errorf("check conflict copy %s: %w", rel, err)
+		}
+	}
+	return true, nil
 }
 
 // trash moves the local entry for rel into the pass's Trash directory under

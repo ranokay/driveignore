@@ -123,6 +123,13 @@ func backdate(t *testing.T, path string) {
 	require.NoError(t, os.Chtimes(path, past, past))
 }
 
+// setMtime pins a file's modification time so a conflict's winner and its copy
+// name are deterministic instead of racing the filesystem clock.
+func setMtime(t *testing.T, path string, at time.Time) {
+	t.Helper()
+	require.NoError(t, os.Chtimes(path, at, at))
+}
+
 // treeSnapshot captures every path below root with the data a pass must not
 // change: inode, size and kind.
 func treeSnapshot(t *testing.T, root string) map[string]string {
@@ -171,8 +178,9 @@ func TestReconcileDryRunClassifiesEveryDecisionRow(t *testing.T) {
 			setup: func(t *testing.T, src, out, state string) {
 				replaceFile(t, filepath.Join(src, "keep.txt"), "local")
 				replaceFile(t, filepath.Join(out, "keep.txt"), "drive")
+				backdate(t, filepath.Join(src, "keep.txt"))
 			},
-			want: []Action{{ActionConflict, "keep.txt", ""}},
+			want: []Action{{ActionConflict, "keep.txt", "drive wins"}},
 		},
 		{
 			name: "local-only new links",
@@ -1026,4 +1034,134 @@ func TestReconcileDeferredPassCommitsNothing(t *testing.T) {
 	third, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
 	require.NoError(t, err)
 	require.Empty(t, third.Actions)
+}
+
+// A path replaced on both sides has no anchor, so neither side may be assumed
+// current. The newest mtime wins at the original path and the losing content
+// survives as a conflict copy on both sides, hardlinked across.
+func TestReconcileKeepsBothSidesWhenNeitherAnchorMatches(t *testing.T) {
+	tests := []struct {
+		name       string
+		winner     string // the side with the newest mtime
+		loser      string // the side preserved in the conflict copy
+		winnerText string
+		loserText  string
+	}{
+		{"drive newest wins", "drive", "local", "drive edit", "local edit"},
+		{"local newest wins", "local", "drive", "local edit", "drive edit"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src, out, state := syncedPair(t)
+			localPath, outPath := filepath.Join(src, "keep.txt"), filepath.Join(out, "keep.txt")
+			replaceFile(t, localPath, "local edit")
+			replaceFile(t, outPath, "drive edit")
+			localAt, driveAt := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), time.Date(2021, 6, 7, 8, 9, 10, 0, time.UTC)
+			if tt.winner == "local" {
+				localAt, driveAt = driveAt, localAt
+			}
+			setMtime(t, localPath, localAt)
+			setMtime(t, outPath, driveAt)
+
+			report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+			require.NoError(t, err)
+			require.Equal(t, []Action{{ActionConflict, "keep.txt", tt.winner + " wins"}}, report.Actions)
+
+			copy := "keep.txt.sync-conflict-" + tt.loser + "-20200102T030405"
+			require.Equal(t, tt.winnerText, read(t, localPath), "the newest content must win at the path")
+			require.Equal(t, tt.winnerText, read(t, outPath))
+			assertLinked(t, outPath, localPath)
+			require.Equal(t, tt.loserText, read(t, filepath.Join(src, copy)), "the losing content must be preserved locally")
+			require.Equal(t, tt.loserText, read(t, filepath.Join(out, copy)), "the losing content must be preserved on the drive side")
+			assertLinked(t, filepath.Join(src, copy), filepath.Join(out, copy))
+			assertNoTempEntries(t, src)
+			assertNoTempEntries(t, out)
+
+			second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+			require.NoError(t, err)
+			require.Empty(t, second.Actions, "a resolved conflict must not repeat")
+		})
+	}
+}
+
+// The conflict copy name must never overwrite an existing entry: when the
+// natural name is taken on either side, the copy lands under the next free
+// suffix after the timestamp.
+func TestReconcileConflictCopyNameCollisionGetsSuffix(t *testing.T) {
+	src, out, state := syncedPair(t)
+	const taken = "keep.txt.sync-conflict-local-20200102T030405"
+	write(t, filepath.Join(src, taken), "already here")
+	saveSyncedState(t, src, out, state)
+
+	localPath, outPath := filepath.Join(src, "keep.txt"), filepath.Join(out, "keep.txt")
+	replaceFile(t, localPath, "local edit")
+	replaceFile(t, outPath, "drive edit")
+	setMtime(t, localPath, time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC))
+	setMtime(t, outPath, time.Date(2021, 6, 7, 8, 9, 10, 0, time.UTC))
+
+	report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Equal(t, []Action{{ActionConflict, "keep.txt", "drive wins"}}, report.Actions)
+
+	require.Equal(t, "already here", read(t, filepath.Join(src, taken)), "an existing entry must never be overwritten")
+	require.Equal(t, "already here", read(t, filepath.Join(out, taken)))
+	const copy = taken + "-1"
+	require.Equal(t, "local edit", read(t, filepath.Join(src, copy)))
+	require.Equal(t, "local edit", read(t, filepath.Join(out, copy)))
+	assertLinked(t, filepath.Join(src, copy), filepath.Join(out, copy))
+
+	second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Empty(t, second.Actions)
+}
+
+// Review Focus 2: a file still being written is deferred without mutation and
+// without a journal write; once its mtime settles into the past the next pass
+// converges.
+func TestReconcileDefersFreshlyModifiedEntries(t *testing.T) {
+	src, out, state := syncedPair(t)
+	write(t, filepath.Join(src, "fresh.txt"), "still being written")
+	stateBefore := read(t, state)
+	srcBefore := treeSnapshot(t, src)
+
+	opts := applyOpts(t)
+	opts.MinAge = time.Hour
+	report, err := Reconcile(baseConfig(t, src, out), state, opts)
+	require.NoError(t, err)
+	require.Equal(t, []Action{{ActionDeferred, "fresh.txt", ""}}, report.Actions)
+	require.Equal(t, stateBefore, read(t, state), "a deferred pass must leave the journal byte-identical")
+	require.Equal(t, srcBefore, treeSnapshot(t, src), "a deferred pass must not touch the source tree")
+	require.NoFileExists(t, filepath.Join(out, "fresh.txt"))
+
+	backdate(t, filepath.Join(src, "fresh.txt"))
+	report, err = Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Equal(t, []Action{{ActionLinked, "fresh.txt", ""}}, report.Actions)
+	assertLinked(t, filepath.Join(src, "fresh.txt"), filepath.Join(out, "fresh.txt"))
+
+	third, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Empty(t, third.Actions)
+}
+
+// A file facing a directory is never resolved automatically: both sides stay
+// untouched and the same report returns until a human settles it.
+func TestReconcileLeavesTypeMismatchAloneAndRepeatsIt(t *testing.T) {
+	src, out, state := syncedPair(t)
+	require.NoError(t, os.Remove(filepath.Join(out, "keep.txt")))
+	require.NoError(t, os.MkdirAll(filepath.Join(out, "keep.txt"), 0o755))
+	stateBefore := read(t, state)
+	srcBefore := treeSnapshot(t, src)
+	outBefore := treeSnapshot(t, out)
+
+	first, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Equal(t, []Action{{ActionTypeConflict, "keep.txt", ""}}, first.Actions)
+	require.Equal(t, stateBefore, read(t, state), "a type conflict must not commit the journal")
+	require.Equal(t, srcBefore, treeSnapshot(t, src), "a type conflict must not touch the source tree")
+	require.Equal(t, outBefore, treeSnapshot(t, out), "a type conflict must not touch the drive tree")
+
+	second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Equal(t, first.Actions, second.Actions, "a type conflict must repeat until resolved by hand")
 }
