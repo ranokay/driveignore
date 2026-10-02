@@ -257,6 +257,9 @@ func (r *watchRun) classify(rel string) (Action, bool) {
 				return r.relink(path, local.info, "local wins"), true
 			}
 		}
+		if r.fresh(local.info) || r.fresh(out.info) {
+			return Action{ActionDeferred, path, ""}, true
+		}
 		return Action{ActionConflict, path, ""}, true
 
 	case localOK && !outOK:
@@ -273,7 +276,14 @@ func (r *watchRun) classify(rel string) (Action, bool) {
 			return Action{}, false
 		}
 		if !r.opts.OneWay && journaled && entry.Type == "file" && entry.Inode != 0 && local.inode == entry.Inode {
-			return Action{ActionTrashedLocal, path, ""}, true
+			if r.fresh(local.info) {
+				return Action{ActionDeferred, path, ""}, true
+			}
+			// A survivor older than the journal's record may be a different
+			// file that reused the inode: route it to creation, never deletion.
+			if local.info.ModTime().UnixNano() >= entry.ModTime {
+				return Action{ActionTrashedLocal, path, ""}, true
+			}
 		}
 		return r.link(path, local.info), true
 
@@ -287,8 +297,20 @@ func (r *watchRun) classify(rel string) (Action, bool) {
 			}
 			return Action{ActionCreatedDir, path, ""}, true
 		}
-		if r.opts.OneWay || (journaled && entry.Type == "file" && entry.Inode != 0 && out.inode == entry.Inode) {
+		if r.opts.OneWay {
+			if r.fresh(out.info) {
+				return Action{ActionDeferred, path, ""}, true
+			}
 			return Action{ActionRemovedDrive, path, ""}, true
+		}
+		if journaled && entry.Type == "file" && entry.Inode != 0 && out.inode == entry.Inode {
+			if r.fresh(out.info) {
+				return Action{ActionDeferred, path, ""}, true
+			}
+			// Same inode-reuse guard as the local-only deletion above.
+			if out.info.ModTime().UnixNano() >= entry.ModTime {
+				return Action{ActionRemovedDrive, path, ""}, true
+			}
 		}
 		return r.importFile(path, out.info), true
 	}

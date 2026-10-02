@@ -106,6 +106,14 @@ func replaceFile(t *testing.T, path, content string) {
 	require.NoError(t, os.Rename(tmp.Name(), path))
 }
 
+// backdate pushes a file's modification time into the past, the way a
+// restore-from-backup or a skewed clock would.
+func backdate(t *testing.T, path string) {
+	t.Helper()
+	past := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(path, past, past))
+}
+
 // treeSnapshot captures every path below root with the data a pass must not
 // change: inode, size and kind.
 func treeSnapshot(t *testing.T, root string) map[string]string {
@@ -180,6 +188,14 @@ func TestReconcileDryRunClassifiesEveryDecisionRow(t *testing.T) {
 			want: []Action{{ActionLinked, "keep.txt", ""}},
 		},
 		{
+			name: "local-only journaled backdated survivor links",
+			setup: func(t *testing.T, src, out, state string) {
+				require.NoError(t, os.Remove(filepath.Join(out, "keep.txt")))
+				backdate(t, filepath.Join(src, "keep.txt"))
+			},
+			want: []Action{{ActionLinked, "keep.txt", ""}},
+		},
+		{
 			name: "drive-only new imports",
 			setup: func(t *testing.T, src, out, state string) {
 				write(t, filepath.Join(out, "added.txt"), "added")
@@ -198,6 +214,14 @@ func TestReconcileDryRunClassifiesEveryDecisionRow(t *testing.T) {
 			setup: func(t *testing.T, src, out, state string) {
 				require.NoError(t, os.Remove(filepath.Join(src, "keep.txt")))
 				replaceFile(t, filepath.Join(out, "keep.txt"), "replaced")
+			},
+			want: []Action{{ActionImported, "keep.txt", ""}},
+		},
+		{
+			name: "drive-only journaled backdated survivor imports",
+			setup: func(t *testing.T, src, out, state string) {
+				require.NoError(t, os.Remove(filepath.Join(src, "keep.txt")))
+				backdate(t, filepath.Join(out, "keep.txt"))
 			},
 			want: []Action{{ActionImported, "keep.txt", ""}},
 		},
@@ -421,17 +445,55 @@ func TestReconcileUnusableStateLogsAndTreatsAsCreations(t *testing.T) {
 }
 
 func TestReconcileDefersFreshlyModifiedFiles(t *testing.T) {
-	src, out, state := syncedPair(t)
-	write(t, filepath.Join(src, "fresh.txt"), "still being written")
+	t.Run("new file", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		write(t, filepath.Join(src, "fresh.txt"), "still being written")
 
-	opts := watchOpts(t)
-	opts.MinAge = time.Hour
-	report, err := Reconcile(baseConfig(t, src, out), state, opts)
-	require.NoError(t, err)
-	require.Equal(t, []Action{{ActionDeferred, "fresh.txt", ""}}, report.Actions)
+		opts := watchOpts(t)
+		opts.MinAge = time.Hour
+		report, err := Reconcile(baseConfig(t, src, out), state, opts)
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionDeferred, "fresh.txt", ""}}, report.Actions)
 
-	opts.MinAge = time.Nanosecond
-	report, err = Reconcile(baseConfig(t, src, out), state, opts)
-	require.NoError(t, err)
-	require.Equal(t, []Action{{ActionLinked, "fresh.txt", ""}}, report.Actions)
+		opts.MinAge = time.Nanosecond
+		report, err = Reconcile(baseConfig(t, src, out), state, opts)
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionLinked, "fresh.txt", ""}}, report.Actions)
+	})
+
+	t.Run("local deletion candidate", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		require.NoError(t, os.Remove(filepath.Join(out, "keep.txt")))
+		write(t, filepath.Join(src, "keep.txt"), "edited while the drive copy was gone")
+
+		opts := watchOpts(t)
+		opts.MinAge = time.Hour
+		report, err := Reconcile(baseConfig(t, src, out), state, opts)
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionDeferred, "keep.txt", ""}}, report.Actions)
+	})
+
+	t.Run("drive deletion candidate", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		require.NoError(t, os.Remove(filepath.Join(src, "keep.txt")))
+		write(t, filepath.Join(out, "keep.txt"), "edited while the local copy was gone")
+
+		opts := watchOpts(t)
+		opts.MinAge = time.Hour
+		report, err := Reconcile(baseConfig(t, src, out), state, opts)
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionDeferred, "keep.txt", ""}}, report.Actions)
+	})
+
+	t.Run("conflict", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		replaceFile(t, filepath.Join(src, "keep.txt"), "local")
+		replaceFile(t, filepath.Join(out, "keep.txt"), "drive")
+
+		opts := watchOpts(t)
+		opts.MinAge = time.Hour
+		report, err := Reconcile(baseConfig(t, src, out), state, opts)
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionDeferred, "keep.txt", ""}}, report.Actions)
+	})
 }
