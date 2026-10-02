@@ -56,9 +56,9 @@ even when the source still contains them.
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&input, "input", "i", ".", "Input directory of source files")
+	addInputFlag(cmd, &input)
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "List files that would be removed without removing them")
-	cmd.Flags().BoolVar(&pruneIgnored, "prune-ignored", false, "Remove files excluded by .driveignore even when they exist in the source")
+	addPruneIgnoredFlag(cmd, &pruneIgnored)
 	return cmd
 }
 

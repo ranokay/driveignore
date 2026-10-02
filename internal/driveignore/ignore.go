@@ -177,15 +177,19 @@ func GlobalIgnorePath() (string, error) {
 }
 
 // EnsureFile creates path and its parents when path does not exist yet.
-// Existing files are left untouched.
-func EnsureFile(path string) error {
+// Existing files are left untouched. created reports whether this call
+// created the file.
+func EnsureFile(path string) (bool, error) {
 	if _, err := os.Stat(path); err == nil {
-		return nil
+		return false, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
+		return false, err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return false, err
 	}
-	return os.WriteFile(path, nil, 0o644)
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
 }

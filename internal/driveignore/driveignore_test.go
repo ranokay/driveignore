@@ -628,7 +628,9 @@ func TestUploadCopyFailureKeepsExistingFile(t *testing.T) {
 
 func TestEnsureFileCreatesMissingFileAndKeepsExistingContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", ".global_driveignore")
-	require.NoError(t, EnsureFile(path))
+	created, err := EnsureFile(path)
+	require.NoError(t, err)
+	require.True(t, created)
 
 	info, err := os.Stat(path)
 	require.NoError(t, err)
@@ -638,6 +640,8 @@ func TestEnsureFileCreatesMissingFileAndKeepsExistingContent(t *testing.T) {
 	}
 
 	require.NoError(t, os.WriteFile(path, []byte("keep\n"), 0o644))
-	require.NoError(t, EnsureFile(path))
+	created, err = EnsureFile(path)
+	require.NoError(t, err)
+	require.False(t, created)
 	require.Equal(t, "keep\n", read(t, path))
 }

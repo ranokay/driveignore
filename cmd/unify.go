@@ -48,10 +48,10 @@ even when they exist in the source.`,
 			return err
 		},
 	}
-	cmd.Flags().StringVarP(&input, "input", "i", ".", "Input directory of the files to be uploaded")
-	cmd.Flags().BoolVarP(&mergeIgnores, "merge-ignores", "M", false, "Merges the global and the input directory's .driveignore")
-	cmd.Flags().BoolVar(&pruneIgnored, "prune-ignored", false, "Remove files excluded by .driveignore even when they exist in the source")
-	cmd.Flags().BoolVar(&copyFiles, "copy", false, "Copy files instead of hardlinking them (for filesystems without hardlink support)")
+	addInputFlag(cmd, &input)
+	addMergeIgnoresFlag(cmd, &mergeIgnores)
+	addPruneIgnoredFlag(cmd, &pruneIgnored)
+	addCopyFlag(cmd, &copyFiles)
 	return cmd
 }
 

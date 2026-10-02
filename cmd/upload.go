@@ -47,10 +47,10 @@ current folder > global config
 			return err
 		},
 	}
-	cmd.Flags().StringVarP(&input, "input", "i", ".", "Input directory of the files to be uploaded")
-	cmd.Flags().BoolVarP(&mergeIgnores, "merge-ignores", "M", false, "Merges global and input dir .driveignore")
+	addInputFlag(cmd, &input)
+	addMergeIgnoresFlag(cmd, &mergeIgnores)
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing files with the same name")
-	cmd.Flags().BoolVar(&copyFiles, "copy", false, "Copy files instead of hardlinking them (for filesystems without hardlink support)")
+	addCopyFlag(cmd, &copyFiles)
 	return cmd
 }
 

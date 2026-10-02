@@ -64,8 +64,8 @@ without printing an error.
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&input, "input", "i", ".", "Input directory of the files to be compared")
-	cmd.Flags().BoolVarP(&mergeIgnores, "merge-ignores", "M", false, "Merges the global and the input directory's .driveignore")
+	addInputFlag(cmd, &input)
+	addMergeIgnoresFlag(cmd, &mergeIgnores)
 	cmd.Flags().BoolVar(&exitCode, "exit-code", false, "Exit with status 1 when differences exist")
 	return cmd
 }
