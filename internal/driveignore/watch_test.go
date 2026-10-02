@@ -688,34 +688,248 @@ func TestReconcileAbortsBeforeCommitOnFailure(t *testing.T) {
 	require.Empty(t, third.Actions)
 }
 
-func TestReconcileSkipsDeletionsButKeepsAnchors(t *testing.T) {
+func TestReconcileDeletesBothDirectionsFromJournalProof(t *testing.T) {
+	t.Run("local delete removes the drive entry", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		require.NoError(t, os.Remove(filepath.Join(src, "sub", "nested.txt")))
+
+		report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionRemovedDrive, "sub/nested.txt", ""}}, report.Actions)
+
+		require.NoFileExists(t, filepath.Join(src, "sub", "nested.txt"))
+		require.NoFileExists(t, filepath.Join(out, "sub", "nested.txt"))
+
+		j, ok := loadJournal(state)
+		require.True(t, ok)
+		require.NotContains(t, j.Entries, filepath.Join("sub", "nested.txt"))
+		// An applied deletion is settled: its parent refreshes its stamps so
+		// the next scan can prune the subtree instead of walking it forever.
+		localStamp, err := dirChangeStamp(filepath.Join(src, "sub"))
+		require.NoError(t, err)
+		require.Equal(t, localStamp, j.Entries["sub"].LocalStamp)
+
+		second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Empty(t, second.Actions)
+	})
+
+	t.Run("drive delete trashes the local file", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		require.NoError(t, os.Remove(filepath.Join(out, "keep.txt")))
+
+		opts := applyOpts(t)
+		require.NoError(t, os.MkdirAll(opts.TrashDir, 0o755))
+
+		report, err := Reconcile(baseConfig(t, src, out), state, opts)
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionTrashedLocal, "keep.txt", ""}}, report.Actions)
+
+		require.NoFileExists(t, filepath.Join(src, "keep.txt"))
+		require.Equal(t, "keep", read(t, filepath.Join(opts.TrashDir, "keep.txt")))
+
+		j, ok := loadJournal(state)
+		require.True(t, ok)
+		require.NotContains(t, j.Entries, "keep.txt")
+
+		second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Empty(t, second.Actions)
+	})
+
+	t.Run("drive removal failure keeps the journal and the entry", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		require.NoError(t, os.Remove(filepath.Join(src, "keep.txt")))
+		stateBefore := read(t, state)
+
+		boom := errors.New("remove boom")
+		cfg := baseConfig(t, src, out)
+		cfg.removeFn = func(string) error { return boom }
+
+		_, err := Reconcile(cfg, state, applyOpts(t))
+		require.ErrorIs(t, err, boom)
+		require.Equal(t, stateBefore, read(t, state), "a failed removal must not commit the journal")
+		require.Equal(t, "keep", read(t, filepath.Join(out, "keep.txt")), "a failed removal must leave the drive entry alone")
+	})
+
+	t.Run("local delete removes the empty drive directory", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		require.NoError(t, os.Remove(filepath.Join(src, "empty")))
+
+		report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionRemovedDrive, "empty", ""}}, report.Actions)
+
+		require.NoDirExists(t, filepath.Join(src, "empty"))
+		require.NoDirExists(t, filepath.Join(out, "empty"))
+
+		second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Empty(t, second.Actions)
+	})
+
+	t.Run("drive delete trashes the empty local directory", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		require.NoError(t, os.Remove(filepath.Join(out, "empty")))
+
+		opts := applyOpts(t)
+		require.NoError(t, os.MkdirAll(opts.TrashDir, 0o755))
+
+		report, err := Reconcile(baseConfig(t, src, out), state, opts)
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionTrashedLocal, "empty", ""}}, report.Actions)
+
+		require.NoDirExists(t, filepath.Join(src, "empty"))
+		require.DirExists(t, filepath.Join(opts.TrashDir, "empty"))
+
+		second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Empty(t, second.Actions)
+	})
+}
+
+func TestReconcileNeverDeletesWithoutMatchingAnchor(t *testing.T) {
+	t.Run("drive-only with a different inode is imported", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		require.NoError(t, os.Remove(filepath.Join(src, "keep.txt")))
+		replaceFile(t, filepath.Join(out, "keep.txt"), "recreated")
+
+		report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionImported, "keep.txt", ""}}, report.Actions)
+
+		require.Equal(t, "recreated", read(t, filepath.Join(src, "keep.txt")), "the drive survivor must be imported, not deleted")
+		assertLinked(t, filepath.Join(out, "keep.txt"), filepath.Join(src, "keep.txt"))
+	})
+
+	t.Run("backdated survivor is linked, not trashed", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		require.NoError(t, os.Remove(filepath.Join(out, "keep.txt")))
+		backdate(t, filepath.Join(src, "keep.txt"))
+
+		opts := applyOpts(t)
+		require.NoError(t, os.MkdirAll(opts.TrashDir, 0o755))
+
+		report, err := Reconcile(baseConfig(t, src, out), state, opts)
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionLinked, "keep.txt", ""}}, report.Actions)
+
+		require.Equal(t, "keep", read(t, filepath.Join(src, "keep.txt")), "the survivor must stay put")
+		assertLinked(t, filepath.Join(src, "keep.txt"), filepath.Join(out, "keep.txt"))
+		require.NoFileExists(t, filepath.Join(opts.TrashDir, "keep.txt"))
+	})
+}
+
+func TestReconcileTrashCollisionDoesNotOverwrite(t *testing.T) {
 	src, out, state := syncedPair(t)
-	require.NoError(t, os.Remove(filepath.Join(out, "sub", "nested.txt")))
-	write(t, filepath.Join(src, "new.txt"), "new")
+	write(t, filepath.Join(src, "same.txt"), "second")
+	saveSyncedState(t, src, out, state)
+	require.NoError(t, os.Remove(filepath.Join(out, "same.txt")))
 
-	j, ok := loadJournal(state)
-	require.True(t, ok)
-	anchor := j.Entries[filepath.Join("sub", "nested.txt")]
+	opts := applyOpts(t)
+	require.NoError(t, os.MkdirAll(opts.TrashDir, 0o755))
+	write(t, filepath.Join(opts.TrashDir, "same.txt"), "first")
 
-	report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	report, err := Reconcile(baseConfig(t, src, out), state, opts)
 	require.NoError(t, err)
-	require.Equal(t, []Action{
-		{ActionLinked, "new.txt", ""},
-		{ActionTrashedLocal, "sub/nested.txt", ""},
-	}, report.Actions)
+	require.Equal(t, []Action{{ActionTrashedLocal, "same.txt", ""}}, report.Actions)
 
-	require.FileExists(t, filepath.Join(src, "sub", "nested.txt"), "the deletion survivor must stay put")
-	require.NoFileExists(t, filepath.Join(out, "sub", "nested.txt"), "a skipped deletion must not be undone")
-
-	j, ok = loadJournal(state)
-	require.True(t, ok)
-	require.Equal(t, anchor, j.Entries[filepath.Join("sub", "nested.txt")], "the anchor must survive for the deletion task")
-	require.Contains(t, j.Entries, "new.txt")
+	require.NoFileExists(t, filepath.Join(src, "same.txt"))
+	require.Equal(t, "first", read(t, filepath.Join(opts.TrashDir, "same.txt")), "an existing trash entry must never be overwritten")
+	require.Equal(t, "second", read(t, filepath.Join(opts.TrashDir, "same-1.txt")))
 
 	second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
 	require.NoError(t, err)
-	require.Equal(t, []Action{{ActionTrashedLocal, "sub/nested.txt", ""}}, second.Actions,
-		"the surviving deletion candidate must be re-reported, not pruned away")
+	require.Empty(t, second.Actions)
+}
+
+func TestReconcileDeletionFailsClosedWhenTrashIsImpossible(t *testing.T) {
+	t.Run("missing trash directory", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		require.NoError(t, os.Remove(filepath.Join(out, "keep.txt")))
+		stateBefore := read(t, state)
+
+		opts := applyOpts(t) // its TrashDir does not exist yet
+		_, err := Reconcile(baseConfig(t, src, out), state, opts)
+		require.Error(t, err, "a deletion that cannot be trashed must fail the pass")
+		require.Equal(t, stateBefore, read(t, state), "a failed pass must not commit the journal")
+		require.Equal(t, "keep", read(t, filepath.Join(src, "keep.txt")), "the survivor must stay put")
+
+		// Once the Trash directory exists the same pass takes the deletion.
+		require.NoError(t, os.MkdirAll(opts.TrashDir, 0o755))
+		report, err := Reconcile(baseConfig(t, src, out), state, opts)
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionTrashedLocal, "keep.txt", ""}}, report.Actions)
+		require.NoFileExists(t, filepath.Join(src, "keep.txt"))
+		require.Equal(t, "keep", read(t, filepath.Join(opts.TrashDir, "keep.txt")))
+	})
+
+	t.Run("rename failure", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		require.NoError(t, os.Remove(filepath.Join(out, "keep.txt")))
+		stateBefore := read(t, state)
+
+		boom := errors.New("rename boom")
+		cfg := baseConfig(t, src, out)
+		cfg.renameFn = func(oldname, newname string) error { return boom }
+
+		opts := applyOpts(t)
+		require.NoError(t, os.MkdirAll(opts.TrashDir, 0o755))
+
+		_, err := Reconcile(cfg, state, opts)
+		require.ErrorIs(t, err, boom)
+		require.Equal(t, stateBefore, read(t, state), "a failed move must not commit the journal")
+		require.Equal(t, "keep", read(t, filepath.Join(src, "keep.txt")), "the survivor must stay put")
+	})
+}
+
+// TestTrashDirResolvesTheDefault pins the point-of-use resolution: an empty
+// TrashDir means the user's Trash, a set one is used as given.
+func TestTrashDirResolvesTheDefault(t *testing.T) {
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		set  string
+		want string
+	}{
+		{"empty means the user's Trash", "", filepath.Join(home, ".Trash")},
+		{"a set directory is used as given", filepath.Join(home, "custom-trash"), filepath.Join(home, "custom-trash")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run := &watchRun{opts: WatchOptions{TrashDir: tt.set}}
+			dir, err := run.trashDir()
+			require.NoError(t, err)
+			require.Equal(t, tt.want, dir)
+		})
+	}
+}
+
+func TestReconcileOneWayPropagatesLocalDeletesOnly(t *testing.T) {
+	src, out, state := syncedPair(t)
+	require.NoError(t, os.Remove(filepath.Join(src, "keep.txt")))
+	require.NoError(t, os.Remove(filepath.Join(out, "sub", "nested.txt")))
+
+	opts := applyOpts(t)
+	opts.OneWay = true
+	report, err := Reconcile(baseConfig(t, src, out), state, opts)
+	require.NoError(t, err)
+	require.Equal(t, []Action{
+		{ActionLinked, "sub/nested.txt", ""},
+		{ActionRemovedDrive, "keep.txt", ""},
+	}, report.Actions)
+
+	require.NoFileExists(t, filepath.Join(src, "keep.txt"))
+	require.NoFileExists(t, filepath.Join(out, "keep.txt"))
+	assertLinked(t, filepath.Join(src, "sub", "nested.txt"), filepath.Join(out, "sub", "nested.txt"))
+	require.NoFileExists(t, filepath.Join(opts.TrashDir, "keep.txt"), "one-way must remove the drive entry, not trash the local one")
+	require.NoFileExists(t, filepath.Join(opts.TrashDir, "sub", "nested.txt"), "one-way must re-link the survivor, not trash it")
+
+	second, err := Reconcile(baseConfig(t, src, out), state, opts)
+	require.NoError(t, err)
+	require.Empty(t, second.Actions)
 }
 
 func TestReconcileDropsEntriesGoneOnBothSides(t *testing.T) {

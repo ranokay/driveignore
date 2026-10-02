@@ -1,6 +1,7 @@
 package driveignore
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"maps"
@@ -120,10 +121,11 @@ func Reconcile(cfg Config, statePath string, opts WatchOptions) (Report, error) 
 	if opts.DryRun {
 		return report, nil
 	}
-	if err := run.apply(report); err != nil {
+	unsettled, err := run.apply(report)
+	if err != nil {
 		return report, err
 	}
-	if err := run.commit(statePath, report); err != nil {
+	if err := run.commit(statePath, unsettled); err != nil {
 		return report, err
 	}
 	return report, nil
@@ -360,11 +362,12 @@ func (r *watchRun) fresh(info os.FileInfo) bool {
 	return time.Since(info.ModTime()) < r.minAge
 }
 
-// apply executes the report. It runs before the journal commit, so any error
-// leaves the previous journal intact and the next pass reclassifies the
-// half-applied result, converges and commits then. Deletions are skipped
-// until they land in a later task; their journal anchors stay put meanwhile.
-func (r *watchRun) apply(report Report) error {
+// apply executes the report and returns the paths whose action it left for a
+// later pass, marked together with their ancestors. It runs before the journal
+// commit, so any error leaves the previous journal intact and the next pass
+// reclassifies the half-applied result, converges and commits then.
+func (r *watchRun) apply(report Report) (map[string]bool, error) {
+	unsettled := map[string]bool{}
 	for _, action := range report.Actions {
 		switch action.Kind {
 		case ActionCreatedDir:
@@ -374,24 +377,92 @@ func (r *watchRun) apply(report Report) error {
 				goal = filepath.Join(r.cfg.Output, rel)
 			}
 			if err := r.cfg.mkdirAll(goal, 0o755); err != nil {
-				return fmt.Errorf("create directory %s: %w", action.Path, err)
+				return nil, fmt.Errorf("create directory %s: %w", action.Path, err)
 			}
 			r.cfg.logf("created directory: %s", action.Path)
 		case ActionLinked, ActionImported, ActionRelinked:
 			source, goal := r.installTargets(action)
 			if err := r.cfg.mkdirAll(filepath.Dir(goal), 0o755); err != nil {
-				return fmt.Errorf("create parent of %s: %w", action.Path, err)
+				return nil, fmt.Errorf("create parent of %s: %w", action.Path, err)
 			}
 			if err := installLink(r.cfg, source, goal, action.Path); err != nil {
-				return err
+				return nil, err
 			}
-		case ActionTrashedLocal, ActionRemovedDrive:
-			r.cfg.logf("skipped deletion until it is implemented: %s: %s", action.Kind, action.Path)
+		case ActionTrashedLocal:
+			if err := r.trash(action.Path); err != nil {
+				return nil, err
+			}
+		case ActionRemovedDrive:
+			rel := filepath.FromSlash(action.Path)
+			if err := r.cfg.remove(filepath.Join(r.cfg.Output, rel)); err != nil {
+				return nil, fmt.Errorf("remove %s: %w", action.Path, err)
+			}
+			r.cfg.logf("removed: %s", action.Path)
 		default:
+			// Report-only kinds (conflict, deferred, type-conflict) run again
+			// next pass; their paths and ancestors must stay unpruned.
 			r.cfg.logf("left for a later pass: %s: %s", action.Kind, action.Path)
+			markUnsettled(unsettled, action.Path)
 		}
 	}
+	return unsettled, nil
+}
+
+// trash moves the local entry for rel into the pass's Trash directory under
+// its base name. A move that cannot land fails the pass: the survivor stays
+// put and nothing is committed.
+func (r *watchRun) trash(rel string) error {
+	target, err := r.trashTarget(rel)
+	if err != nil {
+		return err
+	}
+	source := filepath.Join(r.cfg.Input, filepath.FromSlash(rel))
+	if err := r.cfg.rename(source, target); err != nil {
+		return fmt.Errorf("trash %s: %w", rel, err)
+	}
+	r.cfg.logf("moved to Trash: %s", rel)
 	return nil
+}
+
+// trashTarget names a free path in the pass's Trash directory for rel,
+// appending -1, -2, ... before the extension on collision. A failed collision
+// check aborts instead of gambling on overwriting an entry it could not read.
+func (r *watchRun) trashTarget(rel string) (string, error) {
+	dir, err := r.trashDir()
+	if err != nil {
+		return "", err
+	}
+	base := filepath.Base(filepath.FromSlash(rel))
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	for i := 0; ; i++ {
+		name := base
+		if i > 0 {
+			name = fmt.Sprintf("%s-%d%s", stem, i, ext)
+		}
+		candidate := filepath.Join(dir, name)
+		_, err := r.cfg.lstat(candidate)
+		if errors.Is(err, fs.ErrNotExist) {
+			return candidate, nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("check trash target %s: %w", candidate, err)
+		}
+	}
+}
+
+// trashDir resolves the configured Trash directory, defaulting to the user's
+// ~/.Trash. It is deliberately not created: a move that cannot land there must
+// fail the pass rather than delete the survivor.
+func (r *watchRun) trashDir() (string, error) {
+	if r.opts.TrashDir != "" {
+		return r.opts.TrashDir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve Trash directory: %w", err)
+	}
+	return filepath.Join(home, ".Trash"), nil
 }
 
 // installTargets names the file an install copies from and the path that must
@@ -439,29 +510,13 @@ func installLink(cfg Config, sourcePath, goalPath, rel string) error {
 // path vanished on both sides is dropped, because a stale anchor could
 // authorize deleting a later file that reuses its inode. The write is skipped
 // when the refresh produced the journal already on disk.
-func (r *watchRun) commit(statePath string, report Report) error {
-	unsettled := map[string]bool{}
-	for _, action := range report.Actions {
-		if !actionApplied(action.Kind) {
-			markUnsettled(unsettled, action.Path)
-		}
-	}
+func (r *watchRun) commit(statePath string, unsettled map[string]bool) error {
 	fresh := r.refreshEntries(unsettled)
 	if maps.Equal(fresh, r.journal.Entries) {
 		return nil
 	}
 	r.journal.Entries = fresh
 	return saveJournal(statePath, r.journal)
-}
-
-// actionApplied reports whether apply executed the action's mutation, as
-// opposed to reporting it for a later pass.
-func actionApplied(kind ActionKind) bool {
-	switch kind {
-	case ActionCreatedDir, ActionLinked, ActionImported, ActionRelinked:
-		return true
-	}
-	return false
 }
 
 // markUnsettled records path and every ancestor directory, using the walk's
@@ -477,13 +532,15 @@ func markUnsettled(unsettled map[string]bool, path string) {
 	}
 }
 
-// refreshEntries rebuilds the journal from the post-apply state. Observed
-// paths are re-statted and replace their entries once both sides prove the
-// sync; observed paths that do not prove it keep their previous anchor.
+// refreshEntries rebuilds the journal from the post-apply state. A path whose
+// action the pass left unresolved keeps its previous anchor so the next pass
+// can finish the job; every other observed path is rebuilt from current stats,
+// which drops entries for paths this pass deleted or that no longer prove the
+// sync. Paths under a pruned subtree carry over untouched.
 func (r *watchRun) refreshEntries(unsettled map[string]bool) map[string]journalEntry {
 	fresh := make(map[string]journalEntry, len(r.journal.Entries)+len(r.local))
 	for rel, previous := range r.journal.Entries {
-		if r.observed(rel) || r.underPruned(rel) {
+		if r.underPruned(rel) || (r.observed(rel) && unsettled[rel]) {
 			fresh[rel] = previous
 		}
 	}

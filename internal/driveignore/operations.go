@@ -33,6 +33,7 @@ type Config struct {
 	linkFn       func(oldname, newname string) error // nil means os.Link
 	mkdirAllFn   func(string, os.FileMode) error     // nil means os.MkdirAll
 	renameFn     func(oldname, newname string) error // nil means os.Rename
+	removeFn     func(string) error                  // nil means os.Remove
 	copyFileFn   func(sourcePath, dst string) error  // nil means copyFile
 	globalPathFn func() (string, error)              // nil means GlobalIgnorePath
 }
@@ -107,6 +108,13 @@ func (c Config) rename(oldname, newname string) error {
 		return c.renameFn(oldname, newname)
 	}
 	return os.Rename(oldname, newname)
+}
+
+func (c Config) remove(path string) error {
+	if c.removeFn != nil {
+		return c.removeFn(path)
+	}
+	return os.Remove(path)
 }
 
 func (c Config) copyFile(sourcePath, dst string) error {
