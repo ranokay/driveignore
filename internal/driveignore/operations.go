@@ -22,6 +22,11 @@ type Config struct {
 
 	// Log receives verbose diagnostics. nil disables them.
 	Log func(format string, args ...any)
+	// Progress receives the relative path of every walked entry before it is
+	// processed, including entries that are skipped or already in sync, so
+	// interactive runs can show liveness where Log stays silent. nil disables
+	// reporting; paths use forward slashes.
+	Progress func(rel string)
 
 	statFn       func(string) (os.FileInfo, error)   // nil means os.Stat
 	lstatFn      func(string) (os.FileInfo, error)   // nil means os.Lstat
@@ -117,6 +122,13 @@ func (c Config) logf(format string, args ...any) {
 	}
 }
 
+// tick reports one walked entry to Progress, when set.
+func (c Config) tick(rel string) {
+	if c.Progress != nil {
+		c.Progress(filepath.ToSlash(rel))
+	}
+}
+
 // globalPath resolves the global .driveignore location: the injected seam in
 // tests, GlobalIgnorePath otherwise.
 func (c Config) globalPath() (string, error) {
@@ -183,6 +195,7 @@ func Upload(c Config, opts UploadOptions) (UploadResult, error) {
 	}
 	u := &uploader{Config: c, UploadOptions: opts}
 	err = Walk(c.Input, func(path string, entry fs.DirEntry, rel string) error {
+		u.tick(rel)
 		if entry.Type()&fs.ModeSymlink != 0 {
 			u.logf("skipped symlink: %s", filepath.ToSlash(rel))
 			return nil
@@ -449,6 +462,7 @@ func Clean(c Config, opts CleanOptions) ([]string, error) {
 	}
 	var removed []string
 	err = Walk(c.Output, func(path string, entry fs.DirEntry, rel string) error {
+		c.tick(rel)
 		didRemove, err := c.removeEntry(path, entry, rel, ignored, opts.DryRun)
 		if err != nil {
 			return err
@@ -539,6 +553,7 @@ func Diff(c Config) (DiffResult, error) {
 	}
 	var res DiffResult
 	err = Walk(c.Input, func(path string, entry fs.DirEntry, rel string) error {
+		c.tick(rel)
 		if entry.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
@@ -561,6 +576,7 @@ func Diff(c Config) (DiffResult, error) {
 		return res, err
 	}
 	err = Walk(c.Output, func(path string, entry fs.DirEntry, rel string) error {
+		c.tick(rel)
 		if entry.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}

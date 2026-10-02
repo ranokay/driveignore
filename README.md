@@ -113,6 +113,11 @@ Every command documents its flags in `--help`. The shared flags are:
 - `--exit-code` (`diff` only): exit with status 1 when differences exist
 - `--version`: print the version and exit
 
+When stderr is an interactive terminal, `upload`, `unify`, `clean` and `diff`
+report progress while they walk: a status line about once a second and a
+closing summary. With `--verbose` the walk prints one line per action
+instead; piped output stays unchanged.
+
 ## global .driveignore
 
 `driveignore global` prints the path to a global `.driveignore` (creating it if
