@@ -30,7 +30,7 @@ type agentConfig struct {
 
 // agentLabel names the launchd agent for a pair. WatchPairHash is the single
 // key for per-pair artifacts, so the label matches the journal and lock paths
-// the watcher uses for the same raw input/output strings.
+// the watcher uses for the same pair.
 func agentLabel(input, output string) string {
 	hash, err := driveignore.WatchPairHash(input, output)
 	if err != nil {

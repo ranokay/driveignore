@@ -914,6 +914,7 @@ func TestReconcileDeletionFailsClosedWhenTrashIsImpossible(t *testing.T) {
 		opts := applyOpts(t) // its TrashDir does not exist yet
 		_, err := Reconcile(baseConfig(t, src, out), state, opts)
 		require.Error(t, err, "a deletion that cannot be trashed must fail the pass")
+		require.Contains(t, err.Error(), "--trash-dir", "a trash failure must name the flag that can fix it")
 		require.Equal(t, stateBefore, read(t, state), "a failed pass must not commit the journal")
 		require.Equal(t, "keep", read(t, filepath.Join(src, "keep.txt")), "the survivor must stay put")
 
@@ -1145,23 +1146,55 @@ func TestReconcileDefersFreshlyModifiedEntries(t *testing.T) {
 }
 
 // A file facing a directory is never resolved automatically: both sides stay
-// untouched and the same report returns until a human settles it.
+// untouched and the same report returns until a human settles it. Descendants
+// of the mismatched path are part of that same divergent subtree, so no pass
+// may act on them: installing the missing side would run through a parent that
+// is a file on the other side and fail the whole pass.
 func TestReconcileLeavesTypeMismatchAloneAndRepeatsIt(t *testing.T) {
-	src, out, state := syncedPair(t)
-	require.NoError(t, os.Remove(filepath.Join(out, "keep.txt")))
-	require.NoError(t, os.MkdirAll(filepath.Join(out, "keep.txt"), 0o755))
-	stateBefore := read(t, state)
-	srcBefore := treeSnapshot(t, src)
-	outBefore := treeSnapshot(t, out)
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, src, out string)
+	}{
+		{
+			name: "local file faces an empty drive directory",
+			setup: func(t *testing.T, src, out string) {
+				require.NoError(t, os.Remove(filepath.Join(out, "keep.txt")))
+				require.NoError(t, os.MkdirAll(filepath.Join(out, "keep.txt"), 0o755))
+			},
+		},
+		{
+			name: "local file faces a drive directory with descendants",
+			setup: func(t *testing.T, src, out string) {
+				require.NoError(t, os.Remove(filepath.Join(out, "keep.txt")))
+				write(t, filepath.Join(out, "keep.txt", "sub", "child.txt"), "drive")
+			},
+		},
+		{
+			name: "local directory with descendants faces a drive file",
+			setup: func(t *testing.T, src, out string) {
+				require.NoError(t, os.Remove(filepath.Join(src, "keep.txt")))
+				write(t, filepath.Join(src, "keep.txt", "sub", "child.txt"), "local")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src, out, state := syncedPair(t)
+			tt.setup(t, src, out)
+			stateBefore := read(t, state)
+			srcBefore := treeSnapshot(t, src)
+			outBefore := treeSnapshot(t, out)
 
-	first, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
-	require.NoError(t, err)
-	require.Equal(t, []Action{{ActionTypeConflict, "keep.txt", ""}}, first.Actions)
-	require.Equal(t, stateBefore, read(t, state), "a type conflict must not commit the journal")
-	require.Equal(t, srcBefore, treeSnapshot(t, src), "a type conflict must not touch the source tree")
-	require.Equal(t, outBefore, treeSnapshot(t, out), "a type conflict must not touch the drive tree")
+			first, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+			require.NoError(t, err)
+			require.Equal(t, []Action{{ActionTypeConflict, "keep.txt", ""}}, first.Actions)
+			require.Equal(t, stateBefore, read(t, state), "a type conflict must not commit the journal")
+			require.Equal(t, srcBefore, treeSnapshot(t, src), "a type conflict must not touch the source tree")
+			require.Equal(t, outBefore, treeSnapshot(t, out), "a type conflict must not touch the drive tree")
 
-	second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
-	require.NoError(t, err)
-	require.Equal(t, first.Actions, second.Actions, "a type conflict must repeat until resolved by hand")
+			second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+			require.NoError(t, err)
+			require.Equal(t, first.Actions, second.Actions, "a type conflict must repeat until resolved by hand")
+		})
+	}
 }

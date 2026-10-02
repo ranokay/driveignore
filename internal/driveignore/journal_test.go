@@ -3,6 +3,7 @@ package driveignore
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -116,4 +117,40 @@ func TestWatchPathsAreStablePerPair(t *testing.T) {
 	otherOutput, err := WatchStatePath(src, other)
 	require.NoError(t, err)
 	require.NotEqual(t, state, otherOutput)
+}
+
+// The same directory spelled through a symlink and through its resolved path
+// must key one journal and one lock: a watcher installed with one spelling has
+// to exclude an upload, unify or clean run using the other.
+func TestWatchPathsCanonicalizeSymlinkedRoots(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks requires privileges on Windows")
+	}
+	src, out := t.TempDir(), t.TempDir()
+	resolvedSrc, err := filepath.EvalSymlinks(src)
+	require.NoError(t, err)
+	link := filepath.Join(t.TempDir(), "src-link")
+	require.NoError(t, os.Symlink(resolvedSrc, link))
+
+	linkedState, err := WatchStatePath(link, out)
+	require.NoError(t, err)
+	resolvedState, err := WatchStatePath(resolvedSrc, out)
+	require.NoError(t, err)
+	require.Equal(t, resolvedState, linkedState, "both spellings must share one journal")
+
+	linkedLock, err := WatchLockPath(link, out)
+	require.NoError(t, err)
+	resolvedLock, err := WatchLockPath(resolvedSrc, out)
+	require.NoError(t, err)
+	require.Equal(t, resolvedLock, linkedLock, "both spellings must share one lock")
+}
+
+// A pair whose directories no longer exist still hashes: --uninstall must
+// derive the pair key after the trees are gone.
+func TestWatchPairHashToleratesMissingRoots(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "gone")
+	alsoGone := filepath.Join(t.TempDir(), "also gone")
+	hash, err := WatchPairHash(gone, alsoGone)
+	require.NoError(t, err)
+	require.Len(t, hash, 12)
 }

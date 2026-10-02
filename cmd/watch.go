@@ -29,6 +29,7 @@ func newWatchCmd() *cobra.Command {
 		install   bool
 		uninstall bool
 		interval  time.Duration
+		trashDir  string
 	)
 	cmd := &cobra.Command{
 		Use:   "watch [drive folder]",
@@ -50,7 +51,8 @@ print what a pass would do without changing anything.`,
 				return usageError{fmt.Errorf("--interval must be greater than 0s and at most %s, got %s", watchMaxInterval, interval)}
 			}
 			// The journal, the lock and the reconciliation must all key the
-			// pair by the same raw strings the user named.
+			// pair the same way; WatchPairHash canonicalizes both roots, so
+			// any spelling finds the same state.
 			cfg, _, err := newOptions(cmd, input, args[0])
 			if err != nil {
 				return err
@@ -71,7 +73,7 @@ print what a pass would do without changing anything.`,
 			if err := requireHardlinks(input, args[0]); err != nil {
 				return err
 			}
-			opts := driveignore.WatchOptions{DryRun: dryRun, OneWay: oneWay}
+			opts := driveignore.WatchOptions{DryRun: dryRun, OneWay: oneWay, TrashDir: trashDir}
 			if once {
 				_, err := runWatchPass(cfg, statePath, opts, cmd.OutOrStdout(), verbose)
 				return err
@@ -86,6 +88,7 @@ print what a pass would do without changing anything.`,
 	cmd.Flags().BoolVar(&install, "install", false, "Install the pair as a launchd agent (macOS only)")
 	cmd.Flags().BoolVar(&uninstall, "uninstall", false, "Uninstall the pair's launchd agent (macOS only)")
 	cmd.Flags().DurationVar(&interval, "interval", watchBaseInterval, "Base time between passes while changes flow (idle backs off to 60s)")
+	cmd.Flags().StringVar(&trashDir, "trash-dir", "", "Directory local deletions move to (default: ~/.Trash)")
 	return cmd
 }
 

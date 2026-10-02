@@ -62,7 +62,7 @@ func resetWatchFlags(t *testing.T) {
 	t.Helper()
 	watch, _, err := rootCmd.Find([]string{"watch"})
 	require.NoError(t, err)
-	for _, name := range []string{"once", "dry-run", "one-way", "install", "uninstall", "interval", "input"} {
+	for _, name := range []string{"once", "dry-run", "one-way", "install", "uninstall", "interval", "input", "trash-dir"} {
 		flag := watch.Flags().Lookup(name)
 		require.NotNil(t, flag)
 		require.NoError(t, flag.Value.Set(flag.DefValue))
@@ -152,6 +152,28 @@ func TestWatchOnceAppliesAndIsIdempotent(t *testing.T) {
 
 	require.Equal(t, 0, code, stderr)
 	require.Empty(t, stdout, "a converged pass must print nothing")
+}
+
+// --trash-dir threads through to the pass: a journaled local survivor whose
+// drive copy is gone lands in the chosen directory instead of the built-in
+// ~/.Trash, which non-macOS systems may not have.
+func TestWatchMovesLocalDeletionsToConfiguredTrashDir(t *testing.T) {
+	isolateConfigHome(t)
+	src, out := watchTestPair(t)
+	trash := filepath.Join(t.TempDir(), "Trash")
+	require.NoError(t, os.MkdirAll(trash, 0o755))
+
+	code, _, stderr := runWatch(t, "watch", out, "-i", src, "--once")
+	require.Equal(t, 0, code, stderr)
+	require.NoError(t, os.Remove(filepath.Join(out, "new.txt")))
+
+	code, stdout, stderr := runWatch(t, "watch", out, "-i", src, "--once", "--trash-dir", trash)
+	require.Equal(t, 0, code, stderr)
+	require.Contains(t, stdout, "trashed-local: new.txt")
+	require.NoFileExists(t, filepath.Join(src, "new.txt"))
+	content, err := os.ReadFile(filepath.Join(trash, "new.txt"))
+	require.NoError(t, err)
+	require.Equal(t, "new", string(content))
 }
 
 func TestWatchRefusesWhenPairLocked(t *testing.T) {

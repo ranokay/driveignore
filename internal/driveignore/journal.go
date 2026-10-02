@@ -100,19 +100,37 @@ func saveJournal(path string, j *journal) error {
 }
 
 // WatchPairHash returns a stable short name for the (input, output) pair,
-// derived from both absolute paths. Per-pair artifacts (journal, lock,
-// launchd label) are keyed by it.
+// derived from both absolute paths with symlinks resolved, so one directory
+// named through different spellings (for example /var and /private/var, or a
+// Drive mount reached through two paths) keys one journal, lock and launchd
+// label. Per-pair artifacts (journal, lock, launchd label) are keyed by it.
 func WatchPairHash(input, output string) (string, error) {
-	absInput, err := filepath.Abs(input)
+	canonInput, err := canonicalPairRoot(input)
 	if err != nil {
 		return "", err
 	}
-	absOutput, err := filepath.Abs(output)
+	canonOutput, err := canonicalPairRoot(output)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256([]byte(absInput + "\x00" + absOutput))
+	sum := sha256.Sum256([]byte(canonInput + "\x00" + canonOutput))
 	return hex.EncodeToString(sum[:])[:12], nil
+}
+
+// canonicalPairRoot is the pair-key spelling of one root: absolute, with
+// symlinks resolved. A path EvalSymlinks cannot resolve keeps its absolute
+// spelling instead of failing, so --uninstall still derives the pair key after
+// the trees are gone.
+func canonicalPairRoot(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return abs, nil
+	}
+	return resolved, nil
 }
 
 // WatchStatePath returns the journal path for the pair inside the driveignore

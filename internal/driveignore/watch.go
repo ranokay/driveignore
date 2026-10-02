@@ -245,6 +245,13 @@ func (r *watchRun) actions() []Action {
 // reports false when the path is in sync or needs no action. One-way is
 // local-authoritative: drive content never wins and drive-only paths go away.
 func (r *watchRun) classify(rel string) (Action, bool) {
+	// A path below a file/directory mismatch is part of the same divergent
+	// subtree, so the ancestor's report-only conflict is the only decision
+	// until a human resolves it. Acting on a descendant would install through
+	// a path that is a file on the other side and fail the whole pass.
+	if r.belowTypeConflict(rel) {
+		return Action{}, false
+	}
 	local, localOK := r.local[rel]
 	out, outOK := r.out[rel]
 	entry, journaled := r.journal.Entries[rel]
@@ -330,6 +337,19 @@ func (r *watchRun) classify(rel string) (Action, bool) {
 		return r.importFile(path, out.info), true
 	}
 	return Action{}, false
+}
+
+// belowTypeConflict reports whether an ancestor of rel is present on both
+// sides with mismatched kinds.
+func (r *watchRun) belowTypeConflict(rel string) bool {
+	for parent := filepath.Dir(rel); parent != rel && parent != "."; parent = filepath.Dir(parent) {
+		local, localOK := r.local[parent]
+		out, outOK := r.out[parent]
+		if localOK && outOK && local.isDir != out.isDir {
+			return true
+		}
+	}
+	return false
 }
 
 // relink repairs a broken link from sourceInfo, the side that changed, unless
@@ -502,15 +522,16 @@ func (r *watchRun) conflictNameFree(rel string) (bool, error) {
 
 // trash moves the local entry for rel into the pass's Trash directory under
 // its base name. A move that cannot land fails the pass: the survivor stays
-// put and nothing is committed.
+// put and nothing is committed. The error names --trash-dir because the
+// built-in ~/.Trash default may not exist (Linux, Windows).
 func (r *watchRun) trash(rel string) error {
 	target, err := r.trashTarget(rel)
 	if err != nil {
-		return err
+		return fmt.Errorf("trash %s: %w (set --trash-dir to an existing writable directory)", rel, err)
 	}
 	source := filepath.Join(r.cfg.Input, filepath.FromSlash(rel))
 	if err := r.cfg.rename(source, target); err != nil {
-		return fmt.Errorf("trash %s: %w", rel, err)
+		return fmt.Errorf("trash %s: %w (set --trash-dir to an existing writable directory)", rel, err)
 	}
 	r.cfg.logf("moved to Trash: %s", rel)
 	return nil
