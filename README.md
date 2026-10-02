@@ -109,6 +109,9 @@ Every command documents its flags in `--help`. The shared flags are:
   changing anything
 - `--once`, `--one-way`, `--interval` (`watch`): run a single pass, make the
   source authoritative, or set the base poll interval
+- `--trash-dir` (`watch`): directory local deletions move to (default
+  `~/.Trash`; set it where that directory does not exist, for example on Linux
+  or Windows)
 - `--install`, `--uninstall` (`watch`, macOS only): install or remove the
   launchd agent that keeps the pair reconciled from login
 - `--prune-ignored` (`clean`, `unify`): also remove drive files excluded by

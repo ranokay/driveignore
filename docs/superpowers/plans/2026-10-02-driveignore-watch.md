@@ -14,12 +14,13 @@
 
 - Hardlink mode only. `--copy` and cross-filesystem pairs must error; no silent degradation.
 - Journal written temp-file + rename, only after a complete pass. Missing, corrupt or unusable state = empty-journal semantics for that pass: one-sided paths are creations, deletions are impossible.
-- A path is deleted from one side only when the journal proved it synced and the scan finds it missing on exactly one side. Inode anchor cross-checked with size/mtime; ambiguity routes to creation or conflict, never deletion.
+- A path is deleted from one side only when the journal proved it synced and the scan finds it missing on exactly one side. The file anchor is: inode and type match, surviving mtime not older than recorded; size is deliberately not required (in-place edits change size while remaining the same file). Ambiguity routes to creation or conflict, never deletion.
 - Local deletions move to the user's Trash; if trashing is impossible, the pass fails closed (error, no commit).
 - Ignore rules apply in both directions; ignored paths are never journaled and never acted on.
 - `watch` runs cross-platform in the foreground; `--install`/`--uninstall` are macOS-only.
 - Churn guard: entries modified within the last 2 seconds are deferred.
 - Watch interval: base 2s, maximum 60s, doubling while idle or after errors.
+- Scan pruning uses a per-directory change stamp — ctime on unix, ChangeTime on Windows, 0/unknown means always walk — because remote-side changes move ctime without moving mtime (Task 2 finding).
 - No Google Drive API, no content hashing.
 - Every task ends with `mise run check` green and a conventional commit scoped to the package; only the listed paths are staged.
 
@@ -99,11 +100,11 @@ This runs against the real mount with the browser driving drive.google.com as "a
 **Interfaces:**
 - Consumes: `os.UserConfigDir` (as `GlobalIgnorePath` already uses).
 - Produces:
-  - `type journalEntry struct { Type string; Inode uint64; Size int64; ModTime int64; OutModTime int64 }` (types `"file"`/`"dir"`; times are unix nanos; for files `ModTime` is the shared mtime, for dirs `ModTime`/`OutModTime` are the two directory mtimes)
+  - `type journalEntry struct { Type string; Inode uint64; Size int64; ModTime int64; LocalStamp int64; OutStamp int64 }` (types `"file"`/`"dir"`; times and stamps are unix nanos; files use `Inode`/`Size`/`ModTime` (shared mtime), dirs use `LocalStamp`/`OutStamp` (change stamps, 0 = unknown → always walk))
   - `type journal struct { Version int; Input string; Output string; Entries map[string]journalEntry }`
   - `func loadJournal(path string) (*journal, bool)` — returns an empty journal and `false` when missing, unreadable, corrupt, wrong version, or Input/Output mismatch; never returns a "partially usable" journal
   - `func saveJournal(path string, j *journal) error` — `MkdirAll` + temp file (prefix `.driveignore-watch-`) + rename
-  - `func WatchPairHash(input, output string) (string, error)` — `sha256(absInput+"\x00"+absOutput)[:12]`
+  - `func WatchPairHash(input, output string) (string, error)` — `sha256(canonicalInput+"\x00"+canonicalOutput)[:12]`, where each root is absolute with symlinks resolved (`filepath.EvalSymlinks`); a root that cannot be resolved (gone when `--uninstall` runs) keeps its absolute spelling
   - `func WatchStatePath(input, output string) (string, error)` — `UserConfigDir/driveignore/watch-<WatchPairHash>.json`
   - `func WatchLockPath(input, output string) (string, error)` — same hash, `.lock`
 
@@ -138,8 +139,9 @@ git commit -m "feat(driveignore): add watch state journal"
 ### Task 4: Scan and decide (dry-run report)
 
 **Files:**
-- Create: `internal/driveignore/watch.go`
-- Test: `internal/driveignore/watch_test.go`
+- Create: `internal/driveignore/watch.go`, `internal/driveignore/stamp_darwin.go`, `internal/driveignore/stamp_linux.go`, `internal/driveignore/stamp_windows.go`, `internal/driveignore/stamp_other.go` (`//go:build !darwin && !linux && !windows`; returns 0 = always walk)
+- Test: `internal/driveignore/watch_test.go`, `internal/driveignore/stamp_test.go`
+- Modify: `go.mod`, `go.sum`
 
 **Interfaces:**
 - Consumes: Task 3's `journal`, `loadJournal`; existing `Config.rules()`, `Walk`, injected fs funcs.
@@ -149,11 +151,12 @@ git commit -m "feat(driveignore): add watch state journal"
   - `type Action struct { Kind ActionKind; Path string; Detail string }`
   - `type Report struct { Actions []Action }`
   - `func Reconcile(cfg Config, statePath string, opts WatchOptions) (Report, error)` — Task 4 serves `DryRun: true`; for `!DryRun` it temporarily returns `errApplyNotImplemented` (removed in Task 5)
+  - `func dirChangeStamp(path string) (int64, error)` — unix: directory ctime in unix nanos; windows: ChangeTime via `golang.org/x/sys/windows`; 0 means unknown (always walk)
 
-**Decision rules this task must implement (the table from the spec):** both sides same inode → nothing; both sides different inodes → anchor side unchanged, changed side wins → `ActionRelinked` (`Detail` `"local wins"` or `"drive wins"`); neither anchor → `ActionConflict`; local-only journaled with matching inode (file) → `ActionRemovedDrive`; local-only otherwise → `ActionLinked`; drive-only journaled with matching inode (file) → `ActionTrashedLocal`; drive-only otherwise → `ActionImported`; missing dirs are created (either side) → `ActionCreatedDir`; journaled dir missing on one side and empty on the other → `ActionRemovedDrive`/`ActionTrashedLocal`; type mismatch → `ActionTypeConflict`; entries modified within `MinAge` → `ActionDeferred`. `OneWay` flips all drive-wins/anchor logic to local wins and turns drive-only (journaled or not) into `ActionRemovedDrive`. Built-in exclusions apply before `.driveignore` rules: Google-native stubs (`*.gdoc`, `*.gsheet`, `*.gslides`, `*.gdraw`, `*.gshortcut`) and the Drive client temp artifacts recorded in Task 2; excluded paths are never journaled or acted on. Scanning is pruned: descend into a directory only when its mtime differs from the journal entry for that side.
+**Decision rules this task must implement (the table from the spec):** both sides same inode → nothing; both sides different inodes → anchor side unchanged, changed side wins → `ActionRelinked` (`Detail` `"local wins"` or `"drive wins"`); neither anchor → `ActionConflict`; local-only journaled with matching inode and surviving mtime not older than recorded (file) → `ActionTrashedLocal` (the Drive copy was deleted; trash the local survivor); local-only otherwise (no entry, different inode, or an older survivor) → `ActionLinked`; drive-only journaled with matching inode and surviving mtime not older than recorded (file) → `ActionRemovedDrive` (the local copy was deleted; remove the Drive entry); drive-only otherwise → `ActionImported`; missing dirs are created (either side) → `ActionCreatedDir`; journaled dir missing on the Drive side and empty locally → `ActionTrashedLocal`, missing locally and empty on Drive → `ActionRemovedDrive`; type mismatch → `ActionTypeConflict` (report-only; descendants of the mismatched path are suppressed until a human resolves it, because installing through a path that is a file on the other side would fail the pass); entries modified within `MinAge` → `ActionDeferred`. `OneWay` flips all drive-wins/anchor logic to local wins and turns drive-only (journaled or not) into `ActionRemovedDrive`. Built-in exclusions apply before `.driveignore` rules: the Google-native stub family (`*.gdoc`, `*.gsheet`, `*.gslides`, `*.gdraw`, `*.gshortcut`); Task 2 observed no client temp artifacts inside the mount, so nothing else is added. Excluded paths are never journaled or acted on. Scanning is pruned by change stamps: descend into a directory when either side's `dirChangeStamp` differs from its journaled stamp, the journal lacks the entry, or a stamp is 0 (unknown). Never compare directory size, nlink or mode across sides — Task 2 found them synthetic for remote-origin dirs.
 
 **Test helpers to add in `watch_test.go`** (used by later tasks too):
-- `syncedPair(t) (src, out, state string)` — twin temp trees whose files are hardlinked, plus a saved journal with correct entries and dir mtimes.
+- `syncedPair(t) (src, out, state string)` — twin temp trees whose files are hardlinked, plus a saved journal with correct entries and dir change stamps.
 - `watchOpts(t) WatchOptions` — `MinAge: time.Nanosecond`, `TrashDir: filepath.Join(t.TempDir(), "Trash")`.
 - `tickCollector(cfg *Config) *[]string` — assigns `cfg.Progress`.
 - `replaceFile(t, path, content string)` — writes through a temp name + rename so the inode changes (simulates an editor atomic save / Drive client replace).
@@ -163,7 +166,7 @@ git commit -m "feat(driveignore): add watch state journal"
 ```go
 func TestReconcileDryRunClassifiesEveryDecisionRow(t *testing.T)
 // table rows: same inode, local anchor, drive anchor, neither anchor (conflict),
-// local-only new/journaled/anchor-mismatch, drive-only new/journaled/anchor-mismatch,
+// local-only new/journaled/anchor-mismatch/backdated-survivor, drive-only new/journaled/anchor-mismatch/backdated-survivor,
 // both-missing, type mismatch, empty-dir removal; assert Action kinds and Details.
 
 func TestReconcileDryRunNeverWrites(t *testing.T)
@@ -173,7 +176,7 @@ func TestReconcileOneWayIsLocalAuthoritative(t *testing.T)
 // drive-only new file → ActionRemovedDrive; local-only journaled → ActionLinked; drive anchor → "local wins".
 
 func TestReconcilePrunesUntouchedSubtrees(t *testing.T)
-// tick collector: a touched subtree's path appears, an untouched subtree's paths do not.
+// tick collector: a touched subtree's path appears, an untouched subtree's paths do not, and a subtree whose stamps are 0 is always walked.
 
 func TestReconcileSkipsIgnoredAndSymlinks(t *testing.T)
 // .driveignore matches, Google-native stubs and symlinks on either side produce no actions and no journal entries.
@@ -181,7 +184,7 @@ func TestReconcileSkipsIgnoredAndSymlinks(t *testing.T)
 
 - [ ] **Step 2: Run tests to verify they fail.** Run: `go test ./internal/driveignore -run TestReconcile -v`. Expected: build failure, `undefined: Reconcile`.
 
-- [ ] **Step 3: Implement `watch.go`** with the scan (`Walk` over each side, prune by dir mtimes from the journal), the classification above, and report assembly. Order actions: creations ascending by path, deletions deepest-first. Tick `cfg.Progress` for every walked entry (the existing `Config.tick` seam); pruned subtrees produce no ticks. The journal is loaded once; unusable state logs through `cfg.Log` and behaves as empty.
+- [ ] **Step 3: Implement `watch.go`** with the scan (`Walk` over each side, prune by change stamps from the journal), the classification above, and report assembly. Order actions: creations ascending by path, deletions deepest-first. Tick `cfg.Progress` for every walked entry (the existing `Config.tick` seam); pruned subtrees produce no ticks. The journal is loaded once; unusable state logs through `cfg.Log` and behaves as empty.
 
 - [ ] **Step 4: Run tests to verify they pass.** Run: `go test ./internal/driveignore -run TestReconcile -v`. Expected: PASS.
 
@@ -245,11 +248,11 @@ git commit -m "feat(driveignore): apply watch creations, repairs and imports"
 - Consumes: everything above.
 - Produces: `Config.removeFn func(string) error` (nil → `os.Remove`); deletion behavior per the spec.
 
-Rules to implement exactly:
-- Local file whose drive copy is gone: only when the journal entry exists, the inode matches, and the recorded mtime is not newer than the file's — move the file to `TrashDir` under its base name; on collision append `-1`, `-2`, …; if the move fails, return the error (fail closed).
-- Drive file whose local copy is gone: journal entry + inode match + mtime not younger → `removeFn(drivePath)`.
-- Anchor mismatch (different inode, or surviving file older than recorded) → **creation route**, never deletion.
+Rules to implement exactly (apply executes the report; classification already proved the anchors — do not re-classify):
+- `trashed-local`: move the file to `TrashDir` under its base name; on collision append `-1`, `-2`, …; if the move fails, return the error (fail closed).
+- `removed-drive`: `removeFn(drivePath)`.
 - Directories: journaled + missing on one side + empty on the surviving side → remove the empty dir (deepest first). No inode anchor for dirs: an empty dir has nothing to lose.
+- The anchor checks (journal entry, inode, surviving mtime not older than recorded) live in Task 4 classification.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -267,7 +270,7 @@ func TestReconcileDeletionFailsClosedWhenTrashIsImpossible(t *testing.T)
 // TrashDir unwritable/missing: error returned, state not committed, both files still present.
 
 func TestReconcileOneWayPropagatesLocalDeletesOnly(t *testing.T)
-// one-way: local delete removes from drive; drive-only (journaled) is re-linked, not trashed.
+// one-way: local delete removes from drive; local-only journaled is re-linked to drive, not trashed locally.
 ```
 
 - [ ] **Step 2: Run tests to verify they fail.** Run: `go test ./internal/driveignore -run 'TestReconcileDelet|TestReconcileNeverDeletes|TestReconcileTrash|TestReconcileOneWay' -v`. Expected: FAIL.
@@ -326,7 +329,7 @@ git commit -m "feat(driveignore): keep conflicts, defer churn, report type misma
 ### Task 8: Pair lock, shared with the mutating commands
 
 **Files:**
-- Create: `internal/driveignore/lock.go`, `internal/driveignore/lock_unix.go` (`//go:build unix`), `internal/driveignore/lock_windows.go` (`//go:build windows`)
+- Create: `internal/driveignore/lock.go`, `internal/driveignore/lock_unix.go` (`//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd`), `internal/driveignore/lock_windows.go` (`//go:build windows`), `internal/driveignore/lock_other.go` (`//go:build !darwin && !dragonfly && !freebsd && !linux && !netbsd && !openbsd && !windows`; returns a clear "pair lock unsupported" error so those GOOSes still compile, mirroring `stamp_other.go`)
 - Test: `internal/driveignore/lock_test.go`, `cmd/watch_lock_test.go`
 - Modify: `cmd/upload.go`, `cmd/unify.go`, `cmd/clean.go`, `go.mod`, `go.sum`
 
@@ -367,7 +370,7 @@ git commit -m "feat(driveignore): serialize mutating runs with a per-pair lock"
 
 **Interfaces:**
 - Consumes: `Reconcile`, `WatchOptions`, `Report`, `Action`, `WatchStatePath`, `WatchLockPath`, `AcquireLock`, `newOptions`, the progress reporter.
-- Produces: `driveignore watch [drive folder] [-i source]` with `--once`, `--dry-run`, `--one-way`, `--interval <duration>` (default 2s, max 60s, values ≤ 0 are usage errors); `runWatchPass` and `nextWatchInterval(prev time.Duration, hadActions, failed bool) time.Duration` (base 2s; actions reset to base; idle doubles to 60s; failures double to 60s).
+- Produces: `driveignore watch [drive folder] [-i source]` with `--once`, `--dry-run`, `--one-way`, `--trash-dir <dir>` (where local deletions move; default `~/.Trash`, and a trash failure names this flag), `--interval <duration>` (default 2s, max 60s, values ≤ 0 are usage errors); `runWatchPass` and `nextWatchInterval(prev, base time.Duration, hadActions, failed bool) time.Duration` (base is the `--interval` value, default 2s; actions reset to base; idle doubles up to 60s; failures double up to 60s).
 
 Behavior pinned for tests: before the first pass, watch probes hardlink support between the two trees (creates a hidden probe file on each side, hardlinks across, removes both) and fails with a clear message that watch requires one filesystem and `--copy` is unsupported. `--dry-run` prints `would <kind>: <path>` for every action (plus ` (<detail>)` when non-empty) and a final `would apply N action(s)`; real passes print `<kind>: <path>` only for `trashed-local`, `removed-drive`, `conflict`, `type-conflict`, `deferred` unless `--verbose`, plus a summary `pass: N action(s), K deferred in Xs` when N > 0; a zero-action pass prints nothing. `--once` exits non-zero on pass failure; loop mode logs errors and backs off. The pair lock is held for the process lifetime; the state path comes from `WatchStatePath`.
 
