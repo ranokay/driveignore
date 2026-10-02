@@ -90,6 +90,10 @@ func launchdPlist(c agentConfig) string {
 	return b.String()
 }
 
+// launchctlRunner executes launchctl for the agent lifecycle. The wrappers
+// take one so the failure-recovery paths are testable without a real launchd.
+type launchctlRunner func(args ...string) ([]byte, error)
+
 // installAgent writes the pair's plist into ~/Library/LaunchAgents and loads
 // it. The log directory is created first because launchd opens the standard
 // streams itself and fails the job when their parent does not exist.
@@ -97,6 +101,15 @@ func installAgent(c agentConfig) error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("watch agents use launchd and are only available on macOS; this is %s", runtime.GOOS)
 	}
+	return installAgentWith(c, launchctl)
+}
+
+// installAgentWith implements installAgent over an injectable launchctl. A
+// service left loaded by an earlier install is replaced, and a failed
+// bootstrap removes the plist this call wrote, so neither a re-install nor a
+// retry is blocked by state from an earlier attempt and nothing half-installed
+// can be loaded at the next login.
+func installAgentWith(c agentConfig, run launchctlRunner) error {
 	plistPath, err := agentPlistPath(c.Label)
 	if err != nil {
 		return err
@@ -110,8 +123,16 @@ func installAgent(c agentConfig) error {
 	if err := os.WriteFile(plistPath, []byte(launchdPlist(c)), 0o644); err != nil {
 		return fmt.Errorf("cannot write %s: %w", plistPath, err)
 	}
-	if err := launchctl("bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), plistPath); err != nil {
-		return fmt.Errorf("cannot load launchd agent %s: %w", c.Label, err)
+
+	domain := fmt.Sprintf("gui/%d", os.Getuid())
+	// Replace an instance from an earlier install; an unloaded or missing
+	// service fails here harmlessly.
+	_, _ = run("bootout", domain+"/"+c.Label)
+	if _, err := run("bootstrap", domain, plistPath); err != nil {
+		if removeErr := os.Remove(plistPath); removeErr != nil {
+			return fmt.Errorf("cannot load launchd agent %s: %w (the failed plist at %s could not be removed: %w)", c.Label, err, plistPath, removeErr)
+		}
+		return fmt.Errorf("cannot load launchd agent %s: %w (removed the failed plist)", c.Label, err)
 	}
 	return nil
 }
@@ -121,17 +142,35 @@ func uninstallAgent(label string) error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("watch agents use launchd and are only available on macOS; this is %s", runtime.GOOS)
 	}
+	return uninstallAgentWith(label, launchctl)
+}
+
+// uninstallAgentWith implements uninstallAgent over an injectable launchctl. A
+// bootout failure only blocks the removal while the service is still loaded: a
+// failed install or an earlier uninstall leaves nothing to stop, and that
+// state must not keep the plist around to resurrect the agent at login.
+func uninstallAgentWith(label string, run launchctlRunner) error {
 	plistPath, err := agentPlistPath(label)
 	if err != nil {
 		return err
 	}
-	if err := launchctl("bootout", fmt.Sprintf("gui/%d/%s", os.Getuid(), label)); err != nil {
-		return fmt.Errorf("cannot unload launchd agent %s: %w", label, err)
+	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), label)
+	if _, err := run("bootout", target); err != nil {
+		if agentLoaded(run, target) {
+			return fmt.Errorf("cannot unload launchd agent %s: %w", label, err)
+		}
 	}
 	if err := os.Remove(plistPath); err != nil {
 		return fmt.Errorf("cannot remove %s: %w", plistPath, err)
 	}
 	return nil
+}
+
+// agentLoaded reports whether launchd still has the service bootstrapped; it
+// takes the same gui/<uid>/<label> target bootout does.
+func agentLoaded(run launchctlRunner, target string) bool {
+	_, err := run("print", target)
+	return err == nil
 }
 
 // agentPlistPath returns where launchd discovers the agent.
@@ -200,12 +239,12 @@ func runWatchAgent(cmd *cobra.Command, input, output string, install, uninstall 
 	return nil
 }
 
-// launchctl runs launchctl and folds its output into the error, so a failed
-// bootstrap tells the user what launchd complained about.
-func launchctl(args ...string) error {
+// launchctl runs the real launchctl and folds its output into the error, so a
+// failed bootstrap tells the user what launchd complained about.
+func launchctl(args ...string) ([]byte, error) {
 	out, err := exec.Command("launchctl", args...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("launchctl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return out, fmt.Errorf("launchctl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	return out, nil
 }

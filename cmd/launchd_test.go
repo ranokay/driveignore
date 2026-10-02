@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -94,4 +97,139 @@ func TestInstallAgentRejectsNonDarwin(t *testing.T) {
 	err = uninstallAgent(label)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "macOS")
+}
+
+// agentTestHome points the agent paths at a scratch directory so the recovery
+// tests can write and remove plists without a real launchd.
+func agentTestHome(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+}
+
+// agentTestConfig builds a config whose log path proves nested directories are
+// created by install, not by the test's own temp tree.
+func agentTestConfig(t *testing.T, label string) agentConfig {
+	t.Helper()
+	return agentConfig{
+		Label:   label,
+		Binary:  "/bin/driveignore",
+		Input:   "/in",
+		Output:  "/out",
+		LogPath: filepath.Join(t.TempDir(), "Library", "Logs", "driveignore", "watch-test.log"),
+	}
+}
+
+// plantStalePlist leaves a plist behind as a failed install would, returning
+// its path.
+func plantStalePlist(t *testing.T, label string) string {
+	t.Helper()
+	plistPath, err := agentPlistPath(label)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(plistPath), 0o755))
+	require.NoError(t, os.WriteFile(plistPath, []byte("stale"), 0o644))
+	return plistPath
+}
+
+func TestInstallAgentWritesLoadsAndReplacesExisting(t *testing.T) {
+	agentTestHome(t)
+	label := "dev.ranokay.driveignore.watch.test"
+	cfg := agentTestConfig(t, label)
+	var calls [][]string
+	run := func(args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		return nil, nil
+	}
+
+	require.NoError(t, installAgentWith(cfg, run))
+
+	plistPath, err := agentPlistPath(label)
+	require.NoError(t, err)
+	content, err := os.ReadFile(plistPath)
+	require.NoError(t, err)
+	require.Equal(t, launchdPlist(cfg), string(content))
+	require.DirExists(t, filepath.Dir(cfg.LogPath), "install must create the log directory")
+	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), label)
+	require.Equal(t, [][]string{
+		{"bootout", target},
+		{"bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), plistPath},
+	}, calls, "install must replace an already-loaded service before bootstrapping")
+}
+
+func TestInstallAgentRemovesPlistWhenBootstrapFails(t *testing.T) {
+	agentTestHome(t)
+	label := "dev.ranokay.driveignore.watch.test"
+	cfg := agentTestConfig(t, label)
+	run := func(args ...string) ([]byte, error) {
+		if args[0] == "bootstrap" {
+			return nil, errors.New("bootstrap rejected the plist")
+		}
+		return nil, errors.New("no such service")
+	}
+
+	err := installAgentWith(cfg, run)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot load launchd agent")
+	plistPath, pathErr := agentPlistPath(label)
+	require.NoError(t, pathErr)
+	require.NoFileExists(t, plistPath, "a failed bootstrap must not leave a plist to load at login")
+}
+
+func TestUninstallAgentRemovesPlistWhenNotLoaded(t *testing.T) {
+	agentTestHome(t)
+	label := "dev.ranokay.driveignore.watch.test"
+	plistPath := plantStalePlist(t, label)
+	var calls [][]string
+	run := func(args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		return nil, errors.New("no such service")
+	}
+
+	require.NoError(t, uninstallAgentWith(label, run))
+
+	require.NoFileExists(t, plistPath)
+	require.Equal(t, [][]string{
+		{"bootout", fmt.Sprintf("gui/%d/%s", os.Getuid(), label)},
+		{"print", fmt.Sprintf("gui/%d/%s", os.Getuid(), label)},
+	}, calls)
+}
+
+func TestUninstallAgentKeepsPlistWhenStillLoaded(t *testing.T) {
+	agentTestHome(t)
+	label := "dev.ranokay.driveignore.watch.test"
+	plistPath := plantStalePlist(t, label)
+	run := func(args ...string) ([]byte, error) {
+		switch args[0] {
+		case "bootout":
+			return nil, errors.New("boot-out rejected")
+		case "print":
+			return []byte("service is loaded"), nil
+		}
+		return nil, errors.New("unexpected " + args[0])
+	}
+
+	err := uninstallAgentWith(label, run)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot unload")
+	require.FileExists(t, plistPath, "a still-loaded agent must keep its plist")
+}
+
+func TestUninstallAgentRemovesPlistAfterBootout(t *testing.T) {
+	agentTestHome(t)
+	label := "dev.ranokay.driveignore.watch.test"
+	plistPath := plantStalePlist(t, label)
+	var calls [][]string
+	run := func(args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		return nil, nil
+	}
+
+	require.NoError(t, uninstallAgentWith(label, run))
+
+	require.NoFileExists(t, plistPath)
+	require.Equal(t, [][]string{{"bootout", fmt.Sprintf("gui/%d/%s", os.Getuid(), label)}}, calls,
+		"a successful bootout needs no liveness check")
 }
