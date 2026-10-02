@@ -121,11 +121,11 @@ func Reconcile(cfg Config, statePath string, opts WatchOptions) (Report, error) 
 	if opts.DryRun {
 		return report, nil
 	}
-	unsettled, err := run.apply(report)
+	unsettled, deleted, err := run.apply(report)
 	if err != nil {
 		return report, err
 	}
-	if err := run.commit(statePath, unsettled); err != nil {
+	if err := run.commit(statePath, unsettled, deleted); err != nil {
 		return report, err
 	}
 	return report, nil
@@ -363,11 +363,13 @@ func (r *watchRun) fresh(info os.FileInfo) bool {
 }
 
 // apply executes the report and returns the paths whose action it left for a
-// later pass, marked together with their ancestors. It runs before the journal
-// commit, so any error leaves the previous journal intact and the next pass
-// reclassifies the half-applied result, converges and commits then.
-func (r *watchRun) apply(report Report) (map[string]bool, error) {
-	unsettled := map[string]bool{}
+// later pass, marked together with their ancestors, plus the paths it deleted.
+// It runs before the journal commit, so any error leaves the previous journal
+// intact and the next pass reclassifies the half-applied result, converges and
+// commits then.
+func (r *watchRun) apply(report Report) (unsettled, deleted map[string]bool, err error) {
+	unsettled = map[string]bool{}
+	deleted = map[string]bool{}
 	for _, action := range report.Actions {
 		switch action.Kind {
 		case ActionCreatedDir:
@@ -377,26 +379,28 @@ func (r *watchRun) apply(report Report) (map[string]bool, error) {
 				goal = filepath.Join(r.cfg.Output, rel)
 			}
 			if err := r.cfg.mkdirAll(goal, 0o755); err != nil {
-				return nil, fmt.Errorf("create directory %s: %w", action.Path, err)
+				return nil, nil, fmt.Errorf("create directory %s: %w", action.Path, err)
 			}
 			r.cfg.logf("created directory: %s", action.Path)
 		case ActionLinked, ActionImported, ActionRelinked:
 			source, goal := r.installTargets(action)
 			if err := r.cfg.mkdirAll(filepath.Dir(goal), 0o755); err != nil {
-				return nil, fmt.Errorf("create parent of %s: %w", action.Path, err)
+				return nil, nil, fmt.Errorf("create parent of %s: %w", action.Path, err)
 			}
 			if err := installLink(r.cfg, source, goal, action.Path); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		case ActionTrashedLocal:
 			if err := r.trash(action.Path); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
+			deleted[filepath.FromSlash(action.Path)] = true
 		case ActionRemovedDrive:
 			rel := filepath.FromSlash(action.Path)
 			if err := r.cfg.remove(filepath.Join(r.cfg.Output, rel)); err != nil {
-				return nil, fmt.Errorf("remove %s: %w", action.Path, err)
+				return nil, nil, fmt.Errorf("remove %s: %w", action.Path, err)
 			}
+			deleted[rel] = true
 			r.cfg.logf("removed: %s", action.Path)
 		default:
 			// Report-only kinds (conflict, deferred, type-conflict) run again
@@ -405,7 +409,7 @@ func (r *watchRun) apply(report Report) (map[string]bool, error) {
 			markUnsettled(unsettled, action.Path)
 		}
 	}
-	return unsettled, nil
+	return unsettled, deleted, nil
 }
 
 // trash moves the local entry for rel into the pass's Trash directory under
@@ -503,15 +507,15 @@ func installLink(cfg Config, sourcePath, goalPath, rel string) error {
 
 // commit refreshes and saves the journal after a clean apply. Paths the pass
 // settled are re-statted so file anchors follow a repair and directory change
-// stamps describe the committed state; paths with an unresolved action keep
-// their previous entries and block their parent directories from refreshing
-// stamps, so the next pass walks them again instead of pruning the action
-// away. An unobserved entry survives only under a pruned subtree; one whose
-// path vanished on both sides is dropped, because a stale anchor could
-// authorize deleting a later file that reuses its inode. The write is skipped
-// when the refresh produced the journal already on disk.
-func (r *watchRun) commit(statePath string, unsettled map[string]bool) error {
-	fresh := r.refreshEntries(unsettled)
+// stamps describe the committed state; deleted paths drop their anchor, while
+// paths with an unresolved action keep their previous entries and block their
+// parent directories from refreshing stamps, so the next pass walks them again
+// instead of pruning the action away. An unobserved entry survives only under
+// a pruned subtree; one whose path vanished on both sides is dropped, because
+// a stale anchor could authorize deleting a later file that reuses its inode.
+// The write is skipped when the refresh produced the journal already on disk.
+func (r *watchRun) commit(statePath string, unsettled, deleted map[string]bool) error {
+	fresh := r.refreshEntries(unsettled, deleted)
 	if maps.Equal(fresh, r.journal.Entries) {
 		return nil
 	}
@@ -532,15 +536,15 @@ func markUnsettled(unsettled map[string]bool, path string) {
 	}
 }
 
-// refreshEntries rebuilds the journal from the post-apply state. A path whose
-// action the pass left unresolved keeps its previous anchor so the next pass
-// can finish the job; every other observed path is rebuilt from current stats,
-// which drops entries for paths this pass deleted or that no longer prove the
-// sync. Paths under a pruned subtree carry over untouched.
-func (r *watchRun) refreshEntries(unsettled map[string]bool) map[string]journalEntry {
+// refreshEntries rebuilds the journal from the post-apply state. An observed
+// path keeps its previous anchor unless this pass deleted it, so a directory
+// awaiting deletion keeps the proof the next pass needs, while an applied
+// deletion cannot leave a stale inode behind. Settle rebuilds synced paths
+// from current stats; paths under a pruned subtree carry over untouched.
+func (r *watchRun) refreshEntries(unsettled, deleted map[string]bool) map[string]journalEntry {
 	fresh := make(map[string]journalEntry, len(r.journal.Entries)+len(r.local))
 	for rel, previous := range r.journal.Entries {
-		if r.underPruned(rel) || (r.observed(rel) && unsettled[rel]) {
+		if r.underPruned(rel) || (r.observed(rel) && !deleted[rel]) {
 			fresh[rel] = previous
 		}
 	}

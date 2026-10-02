@@ -788,6 +788,60 @@ func TestReconcileDeletesBothDirectionsFromJournalProof(t *testing.T) {
 	})
 }
 
+// A journaled directory holding content is not a deletion candidate when the
+// pass scans it: only its children are. Its anchor must survive that pass so
+// the next one sees an empty survivor and finishes the deletion, instead of
+// routing the directory to creation and resurrecting it.
+func TestReconcilePropagatesDirectoryDeletionAcrossPasses(t *testing.T) {
+	t.Run("drive deleted the directory", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		require.NoError(t, os.RemoveAll(filepath.Join(out, "sub")))
+
+		opts := applyOpts(t)
+		require.NoError(t, os.MkdirAll(opts.TrashDir, 0o755))
+
+		first, err := Reconcile(baseConfig(t, src, out), state, opts)
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionTrashedLocal, "sub/nested.txt", ""}}, first.Actions)
+		require.NoFileExists(t, filepath.Join(src, "sub", "nested.txt"))
+		j, ok := loadJournal(state)
+		require.True(t, ok)
+		require.Contains(t, j.Entries, "sub", "the directory anchor must survive until its deletion is taken")
+
+		second, err := Reconcile(baseConfig(t, src, out), state, opts)
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionTrashedLocal, "sub", ""}}, second.Actions)
+		require.NoDirExists(t, filepath.Join(src, "sub"))
+		require.DirExists(t, filepath.Join(opts.TrashDir, "sub"))
+
+		third, err := Reconcile(baseConfig(t, src, out), state, opts)
+		require.NoError(t, err)
+		require.Empty(t, third.Actions)
+	})
+
+	t.Run("local deleted the directory", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		require.NoError(t, os.RemoveAll(filepath.Join(src, "sub")))
+
+		first, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionRemovedDrive, "sub/nested.txt", ""}}, first.Actions)
+		require.NoFileExists(t, filepath.Join(out, "sub", "nested.txt"))
+		j, ok := loadJournal(state)
+		require.True(t, ok)
+		require.Contains(t, j.Entries, "sub", "the directory anchor must survive until its deletion is taken")
+
+		second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionRemovedDrive, "sub", ""}}, second.Actions)
+		require.NoDirExists(t, filepath.Join(out, "sub"))
+
+		third, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Empty(t, third.Actions)
+	})
+}
+
 func TestReconcileNeverDeletesWithoutMatchingAnchor(t *testing.T) {
 	t.Run("drive-only with a different inode is imported", func(t *testing.T) {
 		src, out, state := syncedPair(t)
