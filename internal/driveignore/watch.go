@@ -1,9 +1,9 @@
 package driveignore
 
 import (
-	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,10 +14,6 @@ import (
 // defaultChurnAge is the window within which a file's modification time marks
 // it as possibly still being written, so a pass defers acting on it.
 const defaultChurnAge = 2 * time.Second
-
-// errApplyNotImplemented marks the deliberate gap between classifying a pass
-// and applying it: Reconcile only serves dry runs until the apply step lands.
-var errApplyNotImplemented = errors.New("watch: applying actions is not implemented yet")
 
 // WatchOptions configures a reconcile pass. DryRun classifies without
 // mutating anything; OneWay makes the local tree authoritative. MinAge is the
@@ -77,14 +73,14 @@ func isGoogleStub(name string) bool {
 	return googleStubExts[strings.ToLower(filepath.Ext(name))]
 }
 
-// Reconcile scans both trees and reports the actions a pass would take. The
-// journal decides whether a one-sided path was created or deleted; without a
-// usable one every one-sided path is a creation. Only DryRun is served for
-// now: a real pass reports errApplyNotImplemented until apply lands.
+// Reconcile scans both trees, decides one pass's actions and, unless DryRun,
+// applies them and commits the journal. A dry run never writes. A real pass
+// saves state only after every action succeeded, so an error leaves the
+// previous journal intact and the next pass reclassifies whatever landed.
 func Reconcile(cfg Config, statePath string, opts WatchOptions) (Report, error) {
-	if !opts.DryRun {
-		return Report{}, errApplyNotImplemented
-	}
+	// The state file is named after the pair as the caller named it, so a
+	// replacement journal must record those same strings to load back.
+	pairInput, pairOutput := cfg.Input, cfg.Output
 	cfg, err := resolveRoots(cfg)
 	if err != nil {
 		return Report{}, err
@@ -102,6 +98,7 @@ func Reconcile(cfg Config, statePath string, opts WatchOptions) (Report, error) 
 	j, ok := loadJournal(statePath)
 	if !ok {
 		cfg.logf("watch state %s is unusable; treating one-sided paths as creations", statePath)
+		j.Input, j.Output = pairInput, pairOutput
 	}
 
 	run := &watchRun{
@@ -111,6 +108,7 @@ func Reconcile(cfg Config, statePath string, opts WatchOptions) (Report, error) 
 		journal: j,
 		local:   map[string]*sideEntry{},
 		out:     map[string]*sideEntry{},
+		pruned:  map[string]bool{},
 	}
 	if err := run.scan(cfg.Input, run.local, matcher); err != nil {
 		return Report{}, err
@@ -118,11 +116,23 @@ func Reconcile(cfg Config, statePath string, opts WatchOptions) (Report, error) 
 	if err := run.scan(cfg.Output, run.out, matcher); err != nil {
 		return Report{}, err
 	}
-	return Report{Actions: run.actions()}, nil
+	report := Report{Actions: run.actions()}
+	if opts.DryRun {
+		return report, nil
+	}
+	if err := run.apply(report); err != nil {
+		return report, err
+	}
+	if err := run.commit(statePath, report); err != nil {
+		return report, err
+	}
+	return report, nil
 }
 
 // watchRun carries one pass's observations. local and out are keyed by the
-// walk's relative path so the two sides line up directly.
+// walk's relative path so the two sides line up directly. pruned records the
+// directories the scan skipped because both change stamps matched the
+// journal, so the refresh knows their entries carry over untouched.
 type watchRun struct {
 	cfg     Config
 	opts    WatchOptions
@@ -130,6 +140,7 @@ type watchRun struct {
 	journal *journal
 	local   map[string]*sideEntry
 	out     map[string]*sideEntry
+	pruned  map[string]bool
 }
 
 // sideEntry is one path seen during a walk. Files carry the stat data the
@@ -170,6 +181,7 @@ func (r *watchRun) scan(root string, seen map[string]*sideEntry, matcher Matcher
 		}
 		if entry.IsDir() {
 			if r.prune(rel) {
+				r.pruned[rel] = true
 				return filepath.SkipDir
 			}
 			r.cfg.tick(rel)
@@ -346,6 +358,223 @@ func (r *watchRun) importFile(path string, source os.FileInfo) Action {
 // pass must not copy it yet: it may still be mid-write.
 func (r *watchRun) fresh(info os.FileInfo) bool {
 	return time.Since(info.ModTime()) < r.minAge
+}
+
+// apply executes the report. It runs before the journal commit, so any error
+// leaves the previous journal intact and the next pass reclassifies the
+// half-applied result, converges and commits then. Deletions are skipped
+// until they land in a later task; their journal anchors stay put meanwhile.
+func (r *watchRun) apply(report Report) error {
+	for _, action := range report.Actions {
+		switch action.Kind {
+		case ActionCreatedDir:
+			rel := filepath.FromSlash(action.Path)
+			goal := filepath.Join(r.cfg.Input, rel)
+			if _, local := r.local[rel]; local {
+				goal = filepath.Join(r.cfg.Output, rel)
+			}
+			if err := r.cfg.mkdirAll(goal, 0o755); err != nil {
+				return fmt.Errorf("create directory %s: %w", action.Path, err)
+			}
+			r.cfg.logf("created directory: %s", action.Path)
+		case ActionLinked, ActionImported, ActionRelinked:
+			source, goal := r.installTargets(action)
+			if err := r.cfg.mkdirAll(filepath.Dir(goal), 0o755); err != nil {
+				return fmt.Errorf("create parent of %s: %w", action.Path, err)
+			}
+			if err := installLink(r.cfg, source, goal, action.Path); err != nil {
+				return err
+			}
+		case ActionTrashedLocal, ActionRemovedDrive:
+			r.cfg.logf("skipped deletion until it is implemented: %s: %s", action.Kind, action.Path)
+		default:
+			r.cfg.logf("left for a later pass: %s: %s", action.Kind, action.Path)
+		}
+	}
+	return nil
+}
+
+// installTargets names the file an install copies from and the path that must
+// receive it. The kind decides the direction, except a relink, where Detail
+// names the side that changed and therefore wins.
+func (r *watchRun) installTargets(action Action) (source, goal string) {
+	rel := filepath.FromSlash(action.Path)
+	source, goal = filepath.Join(r.cfg.Input, rel), filepath.Join(r.cfg.Output, rel)
+	if action.Kind == ActionImported || (action.Kind == ActionRelinked && action.Detail == "drive wins") {
+		source, goal = goal, source
+	}
+	return source, goal
+}
+
+// installLink places sourcePath at goalPath as a hardlink through a temporary
+// sibling and a rename, so goalPath is never missing while the new entry is
+// prepared. It is the upload install recipe, usable in either direction.
+func installLink(cfg Config, sourcePath, goalPath, rel string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(goalPath), ".driveignore-*")
+	if err != nil {
+		return fmt.Errorf("install %s: %w", rel, err)
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Close()
+	_ = os.Remove(tmpName) // free the name for the link
+
+	if err := cfg.link(sourcePath, tmpName); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("install %s: %w", rel, err)
+	}
+	if err := cfg.rename(tmpName, goalPath); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("install %s: %w", rel, err)
+	}
+	cfg.logf("created hard link: %s", rel)
+	return nil
+}
+
+// commit refreshes and saves the journal after a clean apply. Paths the pass
+// settled are re-statted so file anchors follow a repair and directory change
+// stamps describe the committed state; paths with an unresolved action keep
+// their previous entries and block their parent directories from refreshing
+// stamps, so the next pass walks them again instead of pruning the action
+// away. An unobserved entry survives only under a pruned subtree; one whose
+// path vanished on both sides is dropped, because a stale anchor could
+// authorize deleting a later file that reuses its inode. The write is skipped
+// when the refresh produced the journal already on disk.
+func (r *watchRun) commit(statePath string, report Report) error {
+	unsettled := map[string]bool{}
+	for _, action := range report.Actions {
+		if !actionApplied(action.Kind) {
+			markUnsettled(unsettled, action.Path)
+		}
+	}
+	fresh := r.refreshEntries(unsettled)
+	if maps.Equal(fresh, r.journal.Entries) {
+		return nil
+	}
+	r.journal.Entries = fresh
+	return saveJournal(statePath, r.journal)
+}
+
+// actionApplied reports whether apply executed the action's mutation, as
+// opposed to reporting it for a later pass.
+func actionApplied(kind ActionKind) bool {
+	switch kind {
+	case ActionCreatedDir, ActionLinked, ActionImported, ActionRelinked:
+		return true
+	}
+	return false
+}
+
+// markUnsettled records path and every ancestor directory, using the walk's
+// path separator so the refresh can look them up directly.
+func markUnsettled(unsettled map[string]bool, path string) {
+	for rel := filepath.FromSlash(path); ; {
+		unsettled[rel] = true
+		parent := filepath.Dir(rel)
+		if parent == rel || parent == "." {
+			return
+		}
+		rel = parent
+	}
+}
+
+// refreshEntries rebuilds the journal from the post-apply state. Observed
+// paths are re-statted and replace their entries once both sides prove the
+// sync; observed paths that do not prove it keep their previous anchor.
+func (r *watchRun) refreshEntries(unsettled map[string]bool) map[string]journalEntry {
+	fresh := make(map[string]journalEntry, len(r.journal.Entries)+len(r.local))
+	for rel, previous := range r.journal.Entries {
+		if r.observed(rel) || r.underPruned(rel) {
+			fresh[rel] = previous
+		}
+	}
+	for rel := range r.local {
+		r.settle(fresh, unsettled, rel)
+	}
+	for rel := range r.out {
+		if _, both := r.local[rel]; both {
+			continue
+		}
+		r.settle(fresh, unsettled, rel)
+	}
+	return fresh
+}
+
+func (r *watchRun) observed(rel string) bool {
+	if _, ok := r.local[rel]; ok {
+		return true
+	}
+	_, ok := r.out[rel]
+	return ok
+}
+
+// settle overwrites rel's entry with fresh stat data when the path is synced
+// and its directory may be pruned. A directory holding an unsettled action
+// keeps its previous stamps so the next pass walks it and re-reports.
+func (r *watchRun) settle(fresh map[string]journalEntry, unsettled map[string]bool, rel string) {
+	entry, ok := r.currentEntry(rel)
+	if !ok {
+		return
+	}
+	if entry.Type == "dir" && unsettled[rel] {
+		return
+	}
+	fresh[rel] = entry
+}
+
+// underPruned reports whether rel itself or one of its ancestors was pruned
+// by the scan: a path that was not walked cannot have changed, so its
+// previous entry carries over.
+func (r *watchRun) underPruned(rel string) bool {
+	for {
+		if r.pruned[rel] {
+			return true
+		}
+		parent := filepath.Dir(rel)
+		if parent == rel || parent == "." {
+			return false
+		}
+		rel = parent
+	}
+}
+
+// currentEntry re-stats both sides of rel and describes the journal entry a
+// synced path deserves now. It reports false when the path is not proven
+// synced: missing on either side, different files of the same kind, or an
+// unreadable stat.
+func (r *watchRun) currentEntry(rel string) (journalEntry, bool) {
+	relPath := filepath.FromSlash(rel)
+	localPath := filepath.Join(r.cfg.Input, relPath)
+	outPath := filepath.Join(r.cfg.Output, relPath)
+	localInfo, err := r.cfg.stat(localPath)
+	if err != nil {
+		return journalEntry{}, false
+	}
+	outInfo, err := r.cfg.stat(outPath)
+	if err != nil {
+		return journalEntry{}, false
+	}
+	if localInfo.IsDir() != outInfo.IsDir() {
+		return journalEntry{}, false
+	}
+	if localInfo.IsDir() {
+		localStamp, err := dirChangeStamp(localPath)
+		if err != nil {
+			return journalEntry{}, false
+		}
+		outStamp, err := dirChangeStamp(outPath)
+		if err != nil {
+			return journalEntry{}, false
+		}
+		return journalEntry{Type: "dir", LocalStamp: localStamp, OutStamp: outStamp}, true
+	}
+	if !os.SameFile(localInfo, outInfo) {
+		return journalEntry{}, false
+	}
+	inode, err := fileInode(localPath)
+	if err != nil {
+		return journalEntry{}, false
+	}
+	return journalEntry{Type: "file", Inode: inode, Size: localInfo.Size(), ModTime: localInfo.ModTime().UnixNano()}, true
 }
 
 // dirEmpty reports whether the directory holds no entries. A read error is

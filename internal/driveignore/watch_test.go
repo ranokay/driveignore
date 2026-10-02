@@ -87,6 +87,15 @@ func watchOpts(t *testing.T) WatchOptions {
 	}
 }
 
+// applyOpts is watchOpts with the dry run switched off, for passes that must
+// mutate the trees and commit the journal.
+func applyOpts(t *testing.T) WatchOptions {
+	t.Helper()
+	opts := watchOpts(t)
+	opts.DryRun = false
+	return opts
+}
+
 func tickCollector(cfg *Config) *[]string {
 	ticks := &[]string{}
 	cfg.Progress = func(rel string) { *ticks = append(*ticks, rel) }
@@ -496,4 +505,257 @@ func TestReconcileDefersFreshlyModifiedFiles(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, []Action{{ActionDeferred, "keep.txt", ""}}, report.Actions)
 	})
+}
+
+func TestReconcileLinksAndCommitsState(t *testing.T) {
+	src, out, state := syncedPair(t)
+	write(t, filepath.Join(src, "local-new.txt"), "from local")
+	write(t, filepath.Join(out, "drive-new.txt"), "from drive")
+
+	report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Equal(t, []Action{
+		{ActionImported, "drive-new.txt", ""},
+		{ActionLinked, "local-new.txt", ""},
+	}, report.Actions)
+
+	assertLinked(t, filepath.Join(src, "local-new.txt"), filepath.Join(out, "local-new.txt"))
+	assertLinked(t, filepath.Join(out, "drive-new.txt"), filepath.Join(src, "drive-new.txt"))
+	assertNoTempEntries(t, src)
+	assertNoTempEntries(t, out)
+
+	j, ok := loadJournal(state)
+	require.True(t, ok, "a committed journal must load back")
+	require.Equal(t, "file", j.Entries["local-new.txt"].Type)
+	require.Equal(t, "file", j.Entries["drive-new.txt"].Type)
+	localInode, err := fileInode(filepath.Join(src, "local-new.txt"))
+	require.NoError(t, err)
+	driveInode, err := fileInode(filepath.Join(src, "drive-new.txt"))
+	require.NoError(t, err)
+	require.Equal(t, localInode, j.Entries["local-new.txt"].Inode)
+	require.Equal(t, driveInode, j.Entries["drive-new.txt"].Inode)
+
+	second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Empty(t, second.Actions, "a committed pass must leave nothing to do")
+}
+
+func TestReconcileRepairsBrokenLinksInBothDirections(t *testing.T) {
+	t.Run("local wins", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		replaceFile(t, filepath.Join(src, "keep.txt"), "local edit")
+
+		report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionRelinked, "keep.txt", "local wins"}}, report.Actions)
+
+		require.Equal(t, "local edit", read(t, filepath.Join(src, "keep.txt")))
+		require.Equal(t, "local edit", read(t, filepath.Join(out, "keep.txt")))
+		assertLinked(t, filepath.Join(src, "keep.txt"), filepath.Join(out, "keep.txt"))
+
+		j, ok := loadJournal(state)
+		require.True(t, ok)
+		inode, err := fileInode(filepath.Join(src, "keep.txt"))
+		require.NoError(t, err)
+		require.Equal(t, inode, j.Entries["keep.txt"].Inode, "the anchor must follow the repair")
+
+		second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Empty(t, second.Actions)
+	})
+
+	t.Run("drive wins", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		replaceFile(t, filepath.Join(out, "keep.txt"), "drive edit")
+
+		report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Equal(t, []Action{{ActionRelinked, "keep.txt", "drive wins"}}, report.Actions)
+
+		require.Equal(t, "drive edit", read(t, filepath.Join(src, "keep.txt")))
+		require.Equal(t, "drive edit", read(t, filepath.Join(out, "keep.txt")))
+		assertLinked(t, filepath.Join(out, "keep.txt"), filepath.Join(src, "keep.txt"))
+
+		second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Empty(t, second.Actions)
+	})
+}
+
+func TestReconcileCreatesEmptyDirsAndHandlesUnicodeDeepPaths(t *testing.T) {
+	const (
+		unicodeDir = "ünï code"
+		emptyDir   = unicodeDir + "/empty 空"
+		deepDir    = unicodeDir + "/深/very/deep"
+		deepFile   = deepDir + "/path file.txt"
+	)
+
+	t.Run("local to drive", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		write(t, filepath.Join(src, filepath.FromSlash(deepFile)), "unicode")
+		require.NoError(t, os.MkdirAll(filepath.Join(src, filepath.FromSlash(emptyDir)), 0o755))
+
+		report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Equal(t, []Action{
+			{ActionCreatedDir, unicodeDir, ""},
+			{ActionCreatedDir, emptyDir, ""},
+			{ActionCreatedDir, unicodeDir + "/深", ""},
+			{ActionCreatedDir, unicodeDir + "/深/very", ""},
+			{ActionCreatedDir, deepDir, ""},
+			{ActionLinked, deepFile, ""},
+		}, report.Actions)
+
+		require.DirExists(t, filepath.Join(out, filepath.FromSlash(emptyDir)))
+		require.Equal(t, "unicode", read(t, filepath.Join(out, filepath.FromSlash(deepFile))))
+		assertLinked(t, filepath.Join(src, filepath.FromSlash(deepFile)), filepath.Join(out, filepath.FromSlash(deepFile)))
+		assertNoTempEntries(t, out)
+
+		j, ok := loadJournal(state)
+		require.True(t, ok)
+		require.Equal(t, "dir", j.Entries[filepath.Join("ünï code", "深", "very", "deep")].Type)
+		require.NotZero(t, j.Entries[filepath.Join("ünï code", "深", "very", "deep")].LocalStamp)
+
+		second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Empty(t, second.Actions)
+	})
+
+	t.Run("drive to local", func(t *testing.T) {
+		src, out, state := syncedPair(t)
+		write(t, filepath.Join(out, filepath.FromSlash(deepFile)), "unicode")
+		require.NoError(t, os.MkdirAll(filepath.Join(out, filepath.FromSlash(emptyDir)), 0o755))
+
+		report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Equal(t, []Action{
+			{ActionCreatedDir, unicodeDir, ""},
+			{ActionCreatedDir, emptyDir, ""},
+			{ActionCreatedDir, unicodeDir + "/深", ""},
+			{ActionCreatedDir, unicodeDir + "/深/very", ""},
+			{ActionCreatedDir, deepDir, ""},
+			{ActionImported, deepFile, ""},
+		}, report.Actions)
+
+		require.DirExists(t, filepath.Join(src, filepath.FromSlash(emptyDir)))
+		require.Equal(t, "unicode", read(t, filepath.Join(src, filepath.FromSlash(deepFile))))
+		assertLinked(t, filepath.Join(out, filepath.FromSlash(deepFile)), filepath.Join(src, filepath.FromSlash(deepFile)))
+		assertNoTempEntries(t, src)
+
+		second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+		require.NoError(t, err)
+		require.Empty(t, second.Actions)
+	})
+}
+
+func TestReconcileAbortsBeforeCommitOnFailure(t *testing.T) {
+	src, out, state := syncedPair(t)
+	write(t, filepath.Join(src, "a-first.txt"), "first")
+	write(t, filepath.Join(src, "b-second.txt"), "second")
+	stateBefore := read(t, state)
+
+	boom := errors.New("link boom")
+	cfg := baseConfig(t, src, out)
+	links := 0
+	cfg.linkFn = func(oldname, newname string) error {
+		links++
+		if links == 2 {
+			return boom
+		}
+		return os.Link(oldname, newname)
+	}
+
+	_, err := Reconcile(cfg, state, applyOpts(t))
+	require.ErrorIs(t, err, boom)
+	require.Equal(t, 2, links, "the pass must stop at the failing install")
+	require.Equal(t, stateBefore, read(t, state), "a failed pass must not commit the journal")
+	assertNoTempEntries(t, out)
+
+	// The next clean pass finishes the interrupted work and converges.
+	report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Equal(t, []Action{{ActionLinked, "b-second.txt", ""}}, report.Actions)
+	assertLinked(t, filepath.Join(src, "a-first.txt"), filepath.Join(out, "a-first.txt"))
+	assertLinked(t, filepath.Join(src, "b-second.txt"), filepath.Join(out, "b-second.txt"))
+
+	j, ok := loadJournal(state)
+	require.True(t, ok)
+	require.Equal(t, "file", j.Entries["a-first.txt"].Type)
+	require.Equal(t, "file", j.Entries["b-second.txt"].Type)
+
+	third, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Empty(t, third.Actions)
+}
+
+func TestReconcileSkipsDeletionsButKeepsAnchors(t *testing.T) {
+	src, out, state := syncedPair(t)
+	require.NoError(t, os.Remove(filepath.Join(out, "sub", "nested.txt")))
+	write(t, filepath.Join(src, "new.txt"), "new")
+
+	j, ok := loadJournal(state)
+	require.True(t, ok)
+	anchor := j.Entries[filepath.Join("sub", "nested.txt")]
+
+	report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Equal(t, []Action{
+		{ActionLinked, "new.txt", ""},
+		{ActionTrashedLocal, "sub/nested.txt", ""},
+	}, report.Actions)
+
+	require.FileExists(t, filepath.Join(src, "sub", "nested.txt"), "the deletion survivor must stay put")
+	require.NoFileExists(t, filepath.Join(out, "sub", "nested.txt"), "a skipped deletion must not be undone")
+
+	j, ok = loadJournal(state)
+	require.True(t, ok)
+	require.Equal(t, anchor, j.Entries[filepath.Join("sub", "nested.txt")], "the anchor must survive for the deletion task")
+	require.Contains(t, j.Entries, "new.txt")
+
+	second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Equal(t, []Action{{ActionTrashedLocal, "sub/nested.txt", ""}}, second.Actions,
+		"the surviving deletion candidate must be re-reported, not pruned away")
+}
+
+func TestReconcileDropsEntriesGoneOnBothSides(t *testing.T) {
+	src, out, state := syncedPair(t)
+	require.NoError(t, os.Remove(filepath.Join(src, "keep.txt")))
+	require.NoError(t, os.Remove(filepath.Join(out, "keep.txt")))
+	write(t, filepath.Join(src, "new.txt"), "new")
+
+	report, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Equal(t, []Action{{ActionLinked, "new.txt", ""}}, report.Actions)
+
+	j, ok := loadJournal(state)
+	require.True(t, ok)
+	require.NotContains(t, j.Entries, "keep.txt", "an entry gone on both sides must not linger")
+	require.Contains(t, j.Entries, "new.txt")
+	require.Contains(t, j.Entries, filepath.Join("sub", "nested.txt"), "entries under pruned subtrees carry over")
+}
+
+func TestReconcileDeferredPassCommitsNothing(t *testing.T) {
+	src, out, state := syncedPair(t)
+	write(t, filepath.Join(src, "fresh.txt"), "still being written")
+	stateBefore := read(t, state)
+
+	opts := applyOpts(t)
+	opts.MinAge = time.Hour
+	report, err := Reconcile(baseConfig(t, src, out), state, opts)
+	require.NoError(t, err)
+	require.Equal(t, []Action{{ActionDeferred, "fresh.txt", ""}}, report.Actions)
+	require.Equal(t, stateBefore, read(t, state), "a deferred pass must leave the journal byte-identical")
+	require.NoFileExists(t, filepath.Join(out, "fresh.txt"))
+
+	// Once the write settles, the next pass links the file and commits it.
+	backdate(t, filepath.Join(src, "fresh.txt"))
+	report, err = Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Equal(t, []Action{{ActionLinked, "fresh.txt", ""}}, report.Actions)
+	assertLinked(t, filepath.Join(src, "fresh.txt"), filepath.Join(out, "fresh.txt"))
+
+	third, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
+	require.NoError(t, err)
+	require.Empty(t, third.Actions)
 }
