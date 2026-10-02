@@ -42,6 +42,15 @@ current folder > global config
 				return err
 			}
 			defer prog.Done()
+			lockPath, err := driveignore.WatchLockPath(input, args[0])
+			if err != nil {
+				return err
+			}
+			release, err := driveignore.AcquireLock(lockPath)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = release() }()
 			cfg.MergeIgnores = mergeIgnores
 			res, err := driveignore.Upload(cfg, driveignore.UploadOptions{Force: force, Copy: copyFiles})
 			printConflicts(cmd.OutOrStdout(), res.Conflicts)
