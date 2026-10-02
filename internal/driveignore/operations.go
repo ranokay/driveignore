@@ -418,10 +418,9 @@ func sameContent(pathA, pathB string) bool {
 }
 
 // Clean removes files from Output whose source counterpart is missing or is a
-// different file. Directories are left in place. Stat errors other than
-// not-exist abort the walk instead of being treated as missing files, so a
-// transient error can never delete data. With PruneIgnored, files that the
-// ignore rules exclude are removed as well; DryRun reports without removing.
+// different file. Directories are left in place. With PruneIgnored, files that
+// the ignore rules exclude are removed as well; DryRun reports without
+// removing.
 func Clean(c Config, opts CleanOptions) ([]string, error) {
 	c, err := resolveRoots(c)
 	if err != nil {
@@ -437,42 +436,54 @@ func Clean(c Config, opts CleanOptions) ([]string, error) {
 	}
 	var removed []string
 	err = Walk(c.Output, func(path string, entry fs.DirEntry, rel string) error {
-		if entry.Type()&fs.ModeSymlink != 0 {
-			return nil
+		didRemove, err := c.removeEntry(path, entry, rel, ignored, opts.DryRun)
+		if err != nil {
+			return err
 		}
-		if entry.IsDir() {
-			return nil
-		}
-		sourcePath := filepath.Join(c.Input, rel)
-		sourceInfo, sourceErr := c.stat(sourcePath)
-		if sourceErr != nil && !errors.Is(sourceErr, fs.ErrNotExist) {
-			return fmt.Errorf("stat %s: %w", sourcePath, sourceErr)
-		}
-		if sourceErr == nil {
-			entryInfo, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			keep := filesInSync(sourcePath, path, sourceInfo, entryInfo)
-			pruned := ignored != nil && ignored.Match(sourcePath, false)
-			if keep && !pruned {
-				return nil
-			}
-		}
-		if !opts.DryRun {
-			if err := os.Remove(path); err != nil {
-				return fmt.Errorf("remove %s: %w", filepath.ToSlash(rel), err)
-			}
-		}
-		removed = append(removed, filepath.ToSlash(rel))
-		if opts.DryRun {
-			c.logf("would remove: %s", filepath.ToSlash(rel))
-		} else {
-			c.logf("removed: %s", filepath.ToSlash(rel))
+		if didRemove {
+			removed = append(removed, filepath.ToSlash(rel))
 		}
 		return nil
 	})
 	return removed, err
+}
+
+// removeEntry reports whether the drive-side entry at path is stale and
+// removes it unless dryRun is set. A stat error other than not-exist aborts
+// instead of being treated as a missing file, so a transient error can never
+// delete data.
+func (c Config) removeEntry(path string, entry fs.DirEntry, rel string, ignored Matcher, dryRun bool) (bool, error) {
+	if entry.Type()&fs.ModeSymlink != 0 || entry.IsDir() {
+		return false, nil
+	}
+	sourcePath := filepath.Join(c.Input, rel)
+	sourceInfo, sourceErr := c.stat(sourcePath)
+	if sourceErr != nil && !errors.Is(sourceErr, fs.ErrNotExist) {
+		return false, fmt.Errorf("stat %s: %w", sourcePath, sourceErr)
+	}
+	if sourceErr == nil {
+		entryInfo, err := entry.Info()
+		if err != nil {
+			return false, err
+		}
+		keep := filesInSync(sourcePath, path, sourceInfo, entryInfo)
+		pruned := ignored != nil && ignored.Match(sourcePath, false)
+		if keep && !pruned {
+			return false, nil
+		}
+	}
+	relSlash := filepath.ToSlash(rel)
+	if !dryRun {
+		if err := os.Remove(path); err != nil {
+			return false, fmt.Errorf("remove %s: %w", relSlash, err)
+		}
+	}
+	if dryRun {
+		c.logf("would remove: %s", relSlash)
+	} else {
+		c.logf("removed: %s", relSlash)
+	}
+	return true, nil
 }
 
 // sameEntry reports whether the entry and its counterpart at other describe
