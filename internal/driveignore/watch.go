@@ -43,6 +43,13 @@ const (
 	ActionTypeConflict ActionKind = "type-conflict"
 )
 
+// Detail values carried by relink and conflict actions to name the winning
+// side. They appear in dry-run output, so keep the strings stable.
+const (
+	detailLocalWins = "local wins"
+	detailDriveWins = "drive wins"
+)
+
 // Action is one classified path: Kind is what a pass would do, Path is the
 // relative path with forward slashes, and Detail names the winning side of a
 // self-heal relink or a conflict ("local wins" or "drive wins"); it is empty
@@ -269,14 +276,14 @@ func (r *watchRun) classify(rel string) (Action, bool) {
 			return Action{}, false
 		}
 		if r.opts.OneWay {
-			return r.relink(path, local.info, "local wins"), true
+			return r.relink(path, local.info, detailLocalWins), true
 		}
 		if journaled && entry.Type == "file" && entry.Inode != 0 {
 			if local.inode == entry.Inode {
-				return r.relink(path, out.info, "drive wins"), true
+				return r.relink(path, out.info, detailDriveWins), true
 			}
 			if out.inode == entry.Inode {
-				return r.relink(path, local.info, "local wins"), true
+				return r.relink(path, local.info, detailLocalWins), true
 			}
 		}
 		if r.fresh(local.info) || r.fresh(out.info) {
@@ -365,9 +372,9 @@ func (r *watchRun) relink(path string, source os.FileInfo, detail string) Action
 // wins, and equal times favor local so the outcome is deterministic.
 func conflictDetail(local, out os.FileInfo) string {
 	if out.ModTime().After(local.ModTime()) {
-		return "drive wins"
+		return detailDriveWins
 	}
-	return "local wins"
+	return detailLocalWins
 }
 
 // link installs a local-only file on the drive side.
@@ -455,7 +462,7 @@ func (r *watchRun) resolveConflict(action Action) error {
 	localPath, outPath := filepath.Join(r.cfg.Input, rel), filepath.Join(r.cfg.Output, rel)
 	winnerPath, loserPath, loserSide := localPath, outPath, "drive"
 	loserRoot, otherRoot := r.cfg.Output, r.cfg.Input
-	if action.Detail == "drive wins" {
+	if action.Detail == detailDriveWins {
 		winnerPath, loserPath = outPath, localPath
 		loserSide = "local"
 		loserRoot, otherRoot = r.cfg.Input, r.cfg.Output
@@ -584,7 +591,7 @@ func (r *watchRun) trashDir() (string, error) {
 func (r *watchRun) installTargets(action Action) (source, goal string) {
 	rel := filepath.FromSlash(action.Path)
 	source, goal = filepath.Join(r.cfg.Input, rel), filepath.Join(r.cfg.Output, rel)
-	if action.Kind == ActionImported || (action.Kind == ActionRelinked && action.Detail == "drive wins") {
+	if action.Kind == ActionImported || (action.Kind == ActionRelinked && action.Detail == detailDriveWins) {
 		source, goal = goal, source
 	}
 	return source, goal

@@ -19,6 +19,10 @@ import (
 // per-pair hash follows it, so journal, lock and agent share one name.
 const agentLabelPrefix = "dev.ranokay.driveignore.watch."
 
+// launchctlPath pins the system launchctl. Resolving it through PATH would let
+// an earlier directory in the caller's environment choose the binary.
+const launchctlPath = "/bin/launchctl"
+
 // agentConfig is everything the launchd plist for one watch pair needs.
 type agentConfig struct {
 	Label   string
@@ -242,7 +246,7 @@ func runWatchAgent(cmd *cobra.Command, input, output string, install, uninstall 
 // launchctl runs the real launchctl and folds its output into the error, so a
 // failed bootstrap tells the user what launchd complained about.
 func launchctl(args ...string) ([]byte, error) {
-	out, err := exec.Command("launchctl", args...).CombinedOutput()
+	out, err := exec.Command(launchctlPath, args...).CombinedOutput()
 	if err != nil {
 		return out, fmt.Errorf("launchctl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}

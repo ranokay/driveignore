@@ -1068,13 +1068,13 @@ func TestReconcileKeepsBothSidesWhenNeitherAnchorMatches(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, []Action{{ActionConflict, "keep.txt", tt.winner + " wins"}}, report.Actions)
 
-			copy := "keep.txt.sync-conflict-" + tt.loser + "-20200102T030405"
+			copyName := "keep.txt.sync-conflict-" + tt.loser + "-20200102T030405"
 			require.Equal(t, tt.winnerText, read(t, localPath), "the newest content must win at the path")
 			require.Equal(t, tt.winnerText, read(t, outPath))
 			assertLinked(t, outPath, localPath)
-			require.Equal(t, tt.loserText, read(t, filepath.Join(src, copy)), "the losing content must be preserved locally")
-			require.Equal(t, tt.loserText, read(t, filepath.Join(out, copy)), "the losing content must be preserved on the drive side")
-			assertLinked(t, filepath.Join(src, copy), filepath.Join(out, copy))
+			require.Equal(t, tt.loserText, read(t, filepath.Join(src, copyName)), "the losing content must be preserved locally")
+			require.Equal(t, tt.loserText, read(t, filepath.Join(out, copyName)), "the losing content must be preserved on the drive side")
+			assertLinked(t, filepath.Join(src, copyName), filepath.Join(out, copyName))
 			assertNoTempEntries(t, src)
 			assertNoTempEntries(t, out)
 
@@ -1106,10 +1106,10 @@ func TestReconcileConflictCopyNameCollisionGetsSuffix(t *testing.T) {
 
 	require.Equal(t, "already here", read(t, filepath.Join(src, taken)), "an existing entry must never be overwritten")
 	require.Equal(t, "already here", read(t, filepath.Join(out, taken)))
-	const copy = taken + "-1"
-	require.Equal(t, "local edit", read(t, filepath.Join(src, copy)))
-	require.Equal(t, "local edit", read(t, filepath.Join(out, copy)))
-	assertLinked(t, filepath.Join(src, copy), filepath.Join(out, copy))
+	const copyName = taken + "-1"
+	require.Equal(t, "local edit", read(t, filepath.Join(src, copyName)))
+	require.Equal(t, "local edit", read(t, filepath.Join(out, copyName)))
+	assertLinked(t, filepath.Join(src, copyName), filepath.Join(out, copyName))
 
 	second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
 	require.NoError(t, err)
