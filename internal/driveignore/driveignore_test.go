@@ -135,6 +135,24 @@ func TestUploadHardlinksFilesAndCreatesEmptyDirs(t *testing.T) {
 	assertNotExist(t, filepath.Join(out, "ignored-dir"))
 }
 
+func TestUploadReportsProgressForEveryWalkedEntry(t *testing.T) {
+	src, out := t.TempDir(), t.TempDir()
+	write(t, filepath.Join(src, ".driveignore"), "ignored/\n")
+	write(t, filepath.Join(src, "keep.txt"), "keep")
+	write(t, filepath.Join(src, "ignored", "dropped.txt"), "drop")
+
+	var ticks []string
+	cfg := baseConfig(t, src, out)
+	cfg.Progress = func(rel string) { ticks = append(ticks, rel) }
+
+	runUpload(t, cfg, UploadOptions{})
+	require.ElementsMatch(t, []string{".driveignore", "ignored", "keep.txt"}, ticks)
+
+	ticks = nil
+	runUpload(t, cfg, UploadOptions{})
+	require.Contains(t, ticks, "keep.txt", "already-linked entries must still report progress")
+}
+
 func TestUploadWithoutAnyDriveignoreFails(t *testing.T) {
 	cfg := baseConfig(t, t.TempDir(), t.TempDir())
 	_, err := Upload(cfg, UploadOptions{})

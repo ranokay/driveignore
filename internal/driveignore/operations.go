@@ -22,12 +22,18 @@ type Config struct {
 
 	// Log receives verbose diagnostics. nil disables them.
 	Log func(format string, args ...any)
+	// Progress receives the relative path of every walked entry before it is
+	// processed, including entries that are skipped or already in sync, so
+	// interactive runs can show liveness where Log stays silent. nil disables
+	// reporting; paths use forward slashes.
+	Progress func(rel string)
 
 	statFn       func(string) (os.FileInfo, error)   // nil means os.Stat
 	lstatFn      func(string) (os.FileInfo, error)   // nil means os.Lstat
 	linkFn       func(oldname, newname string) error // nil means os.Link
 	mkdirAllFn   func(string, os.FileMode) error     // nil means os.MkdirAll
 	renameFn     func(oldname, newname string) error // nil means os.Rename
+	removeFn     func(string) error                  // nil means os.Remove
 	copyFileFn   func(sourcePath, dst string) error  // nil means copyFile
 	globalPathFn func() (string, error)              // nil means GlobalIgnorePath
 }
@@ -104,6 +110,13 @@ func (c Config) rename(oldname, newname string) error {
 	return os.Rename(oldname, newname)
 }
 
+func (c Config) remove(path string) error {
+	if c.removeFn != nil {
+		return c.removeFn(path)
+	}
+	return os.Remove(path)
+}
+
 func (c Config) copyFile(sourcePath, dst string) error {
 	if c.copyFileFn != nil {
 		return c.copyFileFn(sourcePath, dst)
@@ -114,6 +127,13 @@ func (c Config) copyFile(sourcePath, dst string) error {
 func (c Config) logf(format string, args ...any) {
 	if c.Log != nil {
 		c.Log(format, args...)
+	}
+}
+
+// tick reports one walked entry to Progress, when set.
+func (c Config) tick(rel string) {
+	if c.Progress != nil {
+		c.Progress(filepath.ToSlash(rel))
 	}
 }
 
@@ -183,6 +203,7 @@ func Upload(c Config, opts UploadOptions) (UploadResult, error) {
 	}
 	u := &uploader{Config: c, UploadOptions: opts}
 	err = Walk(c.Input, func(path string, entry fs.DirEntry, rel string) error {
+		u.tick(rel)
 		if entry.Type()&fs.ModeSymlink != 0 {
 			u.logf("skipped symlink: %s", filepath.ToSlash(rel))
 			return nil
@@ -449,6 +470,7 @@ func Clean(c Config, opts CleanOptions) ([]string, error) {
 	}
 	var removed []string
 	err = Walk(c.Output, func(path string, entry fs.DirEntry, rel string) error {
+		c.tick(rel)
 		didRemove, err := c.removeEntry(path, entry, rel, ignored, opts.DryRun)
 		if err != nil {
 			return err
@@ -539,6 +561,7 @@ func Diff(c Config) (DiffResult, error) {
 	}
 	var res DiffResult
 	err = Walk(c.Input, func(path string, entry fs.DirEntry, rel string) error {
+		c.tick(rel)
 		if entry.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
@@ -561,6 +584,7 @@ func Diff(c Config) (DiffResult, error) {
 		return res, err
 	}
 	err = Walk(c.Output, func(path string, entry fs.DirEntry, rel string) error {
+		c.tick(rel)
 		if entry.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}

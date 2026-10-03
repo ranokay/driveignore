@@ -91,6 +91,7 @@ Commands:
   global   prints the path to the global .driveignore
   unify    uploads the source and removes legacy files in one go
   upload   hardlinks the source into the drive folder
+  watch    keeps the source and the drive folder reconciled continuously
 
 Flags:
       --verbose   print what is happening
@@ -99,11 +100,20 @@ Flags:
 
 Every command documents its flags in `--help`. The shared flags are:
 
-- `-i, --input` (default `.`): source directory for `upload`, `diff`, `unify`
+- `-i, --input` (default `.`): source directory for `upload`, `diff`, `unify`,
+  `watch`
 - `-M, --merge-ignores`: merge the global and the local `.driveignore`
 - `--force` (`upload` only): overwrite existing files with the same name
-- `--dry-run` (`clean` only): list the files that would be removed without
-  removing them
+- `--dry-run` (`clean`, `watch`): `clean` lists the files that would be removed
+  without removing them; `watch` prints every action a pass would take without
+  changing anything
+- `--once`, `--one-way`, `--interval` (`watch`): run a single pass, make the
+  source authoritative, or set the base poll interval
+- `--trash-dir` (`watch`): directory local deletions move to (default
+  `~/.Trash`; set it where that directory does not exist, for example on Linux
+  or Windows)
+- `--install`, `--uninstall` (`watch`, macOS only): install or remove the
+  launchd agent that keeps the pair reconciled from login
 - `--prune-ignored` (`clean`, `unify`): also remove drive files excluded by
   `.driveignore`, even when the source still contains them
 - `--copy` (`upload`, `unify`): copy files instead of hardlinking them, for
@@ -112,6 +122,47 @@ Every command documents its flags in `--help`. The shared flags are:
   by content), so copies are kept and refreshed like links are.
 - `--exit-code` (`diff` only): exit with status 1 when differences exist
 - `--version`: print the version and exit
+
+When stderr is an interactive terminal, `upload`, `unify`, `clean` and `diff`
+report progress while they walk: a status line about once a second and a
+closing summary. With `--verbose` the walk prints one line per action
+instead; piped output stays unchanged.
+
+## watch
+
+```sh
+driveignore watch "/path/to/your drive folder" -i "/path/to/source"
+```
+
+`watch` keeps the pair reconciled continuously instead of requiring a manual
+`unify` after every structural change. Content edits stay instant because both
+copies are hardlinks to the same file, so a pass only has to look at structure:
+created, deleted, renamed and replaced paths. A per-pair journal records which
+paths were proven synced, so the watcher can tell a new local file from one
+deleted on the drive side. Local deletions the watcher performs move to the
+Trash, so every removal is recoverable. The two trees must be on one
+filesystem: watch proves hardlink support before its first pass and refuses to
+run when it cannot.
+
+Run `--once` for a single pass, `--dry-run` to print exactly what a pass would
+do without changing anything, and `--one-way` to make the source authoritative.
+Passes run `--interval` apart (2 seconds by default) while changes keep
+flowing, and back off towards 60 seconds while idle or after a failure; a pass
+that acted returns to the base.
+
+### running the watcher at login (macOS)
+
+`--install` writes a launchd agent for the pair and loads it, so the watcher
+starts at login and is restarted whenever it exits:
+
+```sh
+driveignore watch "/path/to/your drive folder" -i "/path/to/source" --install
+```
+
+The agent runs the same binary that invoked the command and logs stdout and
+stderr to `~/Library/Logs/driveignore/watch-<pair>.log`, one file per pair.
+`--uninstall` unloads the agent and removes it; the logs stay. Both flags are
+macOS-only.
 
 ## global .driveignore
 

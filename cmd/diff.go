@@ -41,10 +41,11 @@ without printing an error.
 `,
 		Args: singleDirArg(),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := newOptions(cmd, input, args[0])
+			cfg, prog, err := newOptions(cmd, input, args[0])
 			if err != nil {
 				return err
 			}
+			defer prog.Done()
 			cfg.MergeIgnores = mergeIgnores
 			res, err := driveignore.Diff(cfg)
 			if err != nil {
