@@ -621,8 +621,13 @@ func TestReconcileCreatesEmptyDirsAndHandlesUnicodeDeepPaths(t *testing.T) {
 
 		j, ok := loadJournal(state)
 		require.True(t, ok)
-		require.Equal(t, "dir", j.Entries[filepath.Join("ünï code", "深", "very", "deep")].Type)
-		require.NotZero(t, j.Entries[filepath.Join("ünï code", "深", "very", "deep")].LocalStamp)
+		entry := j.Entries[filepath.Join("ünï code", "深", "very", "deep")]
+		require.Equal(t, "dir", entry.Type)
+		// Platforms without change stamps (Windows) record 0, which forces a
+		// walk; everywhere else the stamp must be a real value.
+		if probe, err := dirChangeStamp(filepath.Join(src, unicodeDir)); err == nil && probe != 0 {
+			require.NotZero(t, entry.LocalStamp)
+		}
 
 		second, err := Reconcile(baseConfig(t, src, out), state, applyOpts(t))
 		require.NoError(t, err)
