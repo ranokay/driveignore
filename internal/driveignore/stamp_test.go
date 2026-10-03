@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -18,9 +19,13 @@ func TestDirChangeStampAdvancesOnDirectoryChange(t *testing.T) {
 
 	write(t, filepath.Join(dir, "new.txt"), "x")
 
-	after, err := dirChangeStamp(dir)
-	require.NoError(t, err)
-	require.NotEqual(t, before, after)
+	// Windows updates a directory's change time lazily, so poll briefly
+	// instead of assuming the first read already sees the new stamp.
+	require.Eventually(t, func() bool {
+		after, err := dirChangeStamp(dir)
+		require.NoError(t, err)
+		return after != before
+	}, 5*time.Second, 50*time.Millisecond)
 }
 
 func TestDirChangeStampMissingPathErrors(t *testing.T) {
