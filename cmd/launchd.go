@@ -15,35 +15,29 @@ import (
 	"github.com/ranokay/driveignore/internal/driveignore"
 )
 
-// agentLabelPrefix is the reverse-DNS namespace of the launchd agents. The
+// agentLabelPrefix is the reverse-DNS namespace of the watch agents. The
 // per-pair hash follows it, so journal, lock and agent share one name.
 const agentLabelPrefix = "dev.ranokay.driveignore.watch."
+
+// guardLabelPrefix is the reverse-DNS namespace of the guard agents, keyed by
+// the guarded folder's root hash.
+const guardLabelPrefix = "dev.ranokay.driveignore.guard."
 
 // launchctlPath pins the system launchctl. Resolving it through PATH would let
 // an earlier directory in the caller's environment choose the binary.
 const launchctlPath = "/bin/launchctl"
 
-// agentConfig is everything the launchd plist for one watch pair needs.
+// agentConfig is everything the launchd plist for one agent needs.
 type agentConfig struct {
 	Label   string
-	Binary  string
-	Input   string
-	Output  string
+	Args    []string
 	LogPath string
 }
 
-// agentLabel names the launchd agent for a pair. WatchPairHash is the single
-// key for per-pair artifacts, so the label matches the journal and lock paths
-// the watcher uses for the same pair.
-func agentLabel(input, output string) string {
-	hash, err := driveignore.WatchPairHash(input, output)
-	if err != nil {
-		// WatchPairHash only fails when a relative pair cannot be resolved
-		// against a missing working directory; the command resolves the pair
-		// before calling this and reports that error, so this is unreachable.
-		return agentLabelPrefix
-	}
-	return agentLabelPrefix + hash
+// agentLabel names one launchd agent: the command's reverse-DNS prefix plus
+// the artifact hash of the folder it manages.
+func agentLabel(prefix, key string) string {
+	return prefix + key
 }
 
 // launchdPlist renders the agent definition. The builder is pure so the
@@ -69,9 +63,8 @@ func launchdPlist(c agentConfig) string {
 
 	writeKey("ProgramArguments")
 	write("\t<array>\n")
-	// watch takes the drive folder as its positional argument and the source
-	// through -i, the same shape a foreground run uses.
-	for _, arg := range []string{c.Binary, "watch", c.Output, "-i", c.Input} {
+	// Each agent records the same argument list its foreground run would use.
+	for _, arg := range c.Args {
 		write("\t\t<string>")
 		_ = xml.EscapeText(&b, []byte(arg))
 		write("</string>\n")
@@ -103,7 +96,7 @@ type launchctlRunner func(args ...string) ([]byte, error)
 // streams itself and fails the job when their parent does not exist.
 func installAgent(c agentConfig) error {
 	if runtime.GOOS != "darwin" {
-		return fmt.Errorf("watch agents use launchd and are only available on macOS; this is %s", runtime.GOOS)
+		return fmt.Errorf("launchd agents are only available on macOS; this is %s", runtime.GOOS)
 	}
 	return installAgentWith(c, launchctl)
 }
@@ -144,7 +137,7 @@ func installAgentWith(c agentConfig, run launchctlRunner) error {
 // uninstallAgent unloads the pair's agent and removes its plist.
 func uninstallAgent(label string) error {
 	if runtime.GOOS != "darwin" {
-		return fmt.Errorf("watch agents use launchd and are only available on macOS; this is %s", runtime.GOOS)
+		return fmt.Errorf("launchd agents are only available on macOS; this is %s", runtime.GOOS)
 	}
 	return uninstallAgentWith(label, launchctl)
 }
@@ -197,7 +190,7 @@ func runWatchAgent(cmd *cobra.Command, input, output string, install, uninstall 
 	if err != nil {
 		return err
 	}
-	label := agentLabel(input, output)
+	label := agentLabel(agentLabelPrefix, hash)
 
 	if uninstall {
 		if err := uninstallAgent(label); err != nil {
@@ -231,15 +224,63 @@ func runWatchAgent(cmd *cobra.Command, input, output string, install, uninstall 
 	}
 	c := agentConfig{
 		Label:   label,
-		Binary:  binary,
-		Input:   absInput,
-		Output:  absOutput,
+		Args:    []string{binary, "watch", absOutput, "-i", absInput},
 		LogPath: filepath.Join(home, "Library", "Logs", "driveignore", "watch-"+hash+".log"),
 	}
 	if err := installAgent(c); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "watch agent installed: %s\n", label)
+	return nil
+}
+
+// runGuardAgent handles guard --install/--uninstall. Both actions key off the
+// guarded folder's root hash, so the agent and a foreground run share one lock.
+func runGuardAgent(cmd *cobra.Command, root string, install, uninstall bool) error {
+	if install && uninstall {
+		return usageError{errors.New("--install and --uninstall cannot be combined")}
+	}
+	hash, err := driveignore.GuardRootHash(root)
+	if err != nil {
+		return err
+	}
+	label := agentLabel(guardLabelPrefix, hash)
+
+	if uninstall {
+		if err := uninstallAgent(label); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "guard agent removed: %s\n", label)
+		return nil
+	}
+
+	if err := requireDir(root); err != nil {
+		return err
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("cannot locate the driveignore binary: %w", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	// launchd starts agents with / as the working directory, so the plist
+	// records the resolved folder; the hash above still names the folder the
+	// user asked for.
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	c := agentConfig{
+		Label:   label,
+		Args:    []string{binary, "guard", absRoot},
+		LogPath: filepath.Join(home, "Library", "Logs", "driveignore", "guard-"+hash+".log"),
+	}
+	if err := installAgent(c); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "guard agent installed: %s\n", label)
 	return nil
 }
 

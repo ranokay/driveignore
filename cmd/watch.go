@@ -12,14 +12,6 @@ import (
 	"github.com/ranokay/driveignore/internal/driveignore"
 )
 
-// The watch loop polls on an adaptive interval: fast while changes keep
-// flowing and backing off towards watchMaxInterval while idle or after a
-// failed pass, so an unused or unhealthy pair is not hammered.
-const (
-	watchBaseInterval = 2 * time.Second
-	watchMaxInterval  = 60 * time.Second
-)
-
 func newWatchCmd() *cobra.Command {
 	var (
 		input     string
@@ -47,8 +39,8 @@ print what a pass would do without changing anything.`,
 			if install || uninstall {
 				return runWatchAgent(cmd, input, args[0], install, uninstall)
 			}
-			if interval <= 0 || interval > watchMaxInterval {
-				return usageError{fmt.Errorf("--interval must be greater than 0s and at most %s, got %s", watchMaxInterval, interval)}
+			if interval <= 0 || interval > pollMaxInterval {
+				return usageError{fmt.Errorf("--interval must be greater than 0s and at most %s, got %s", pollMaxInterval, interval)}
 			}
 			// The journal, the lock and the reconciliation must all key the
 			// pair the same way; WatchPairHash canonicalizes both roots, so
@@ -87,7 +79,7 @@ print what a pass would do without changing anything.`,
 	cmd.Flags().BoolVar(&oneWay, "one-way", false, "Only propagate local changes; the source tree is authoritative")
 	cmd.Flags().BoolVar(&install, "install", false, "Install the pair as a launchd agent (macOS only)")
 	cmd.Flags().BoolVar(&uninstall, "uninstall", false, "Uninstall the pair's launchd agent (macOS only)")
-	cmd.Flags().DurationVar(&interval, "interval", watchBaseInterval, "Base time between passes while changes flow (idle backs off to 60s)")
+	cmd.Flags().DurationVar(&interval, "interval", pollBaseInterval, "Base time between passes while changes flow (idle backs off to 60s)")
 	cmd.Flags().StringVar(&trashDir, "trash-dir", "", "Directory local deletions move to (default: ~/.Trash)")
 	return cmd
 }
@@ -137,26 +129,9 @@ func watchLoop(cmd *cobra.Command, cfg driveignore.Config, statePath string, opt
 		if err != nil {
 			_, _ = fmt.Fprintln(errOut, "watch:", err)
 		}
-		interval = nextWatchInterval(interval, base, len(report.Actions) > 0, err != nil)
+		interval = nextPollInterval(interval, base, len(report.Actions) > 0, err != nil)
 		time.Sleep(interval)
 	}
-}
-
-// nextWatchInterval picks the delay before the next pass: base after a pass
-// that made progress, doubling towards the maximum while idle or after a
-// failure, never going below base.
-func nextWatchInterval(prev, base time.Duration, hadActions, failed bool) time.Duration {
-	if !failed && hadActions {
-		return base
-	}
-	next := prev * 2
-	if next < base {
-		next = base
-	}
-	if next > watchMaxInterval {
-		next = watchMaxInterval
-	}
-	return next
 }
 
 // printWatchReport renders one pass. A dry run names every action and ends

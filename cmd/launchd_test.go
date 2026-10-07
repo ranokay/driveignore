@@ -16,9 +16,7 @@ import (
 func TestLaunchdPlistPinsArgumentsAndLogs(t *testing.T) {
 	cfg := agentConfig{
 		Label:   "dev.ranokay.driveignore.watch.0123456789ab",
-		Binary:  "/usr/local/bin/driveignore",
-		Input:   "/Users/x/source",
-		Output:  "/Users/x/Drive/my drive",
+		Args:    []string{"/usr/local/bin/driveignore", "watch", "/Users/x/Drive/my drive", "-i", "/Users/x/source"},
 		LogPath: "/Users/x/Library/Logs/driveignore/watch-0123456789ab.log",
 	}
 
@@ -42,9 +40,7 @@ func TestLaunchdPlistPinsArgumentsAndLogs(t *testing.T) {
 func TestLaunchdPlistEscapesXML(t *testing.T) {
 	plist := launchdPlist(agentConfig{
 		Label:   "label",
-		Binary:  "binary",
-		Input:   "/source/a&b",
-		Output:  "/drive/<out>",
+		Args:    []string{"binary", "watch", "/drive/<out>", "-i", "/source/a&b"},
 		LogPath: "/log",
 	})
 
@@ -53,17 +49,19 @@ func TestLaunchdPlistEscapesXML(t *testing.T) {
 	require.NotContains(t, plist, "/source/a&b")
 }
 
-func TestAgentLabelIsStablePerPair(t *testing.T) {
+func TestAgentLabelPinsTheArtifactHash(t *testing.T) {
 	input, output := "/Users/x/source", "/Users/x/Drive/out"
 	hash, err := driveignore.WatchPairHash(input, output)
 	require.NoError(t, err)
 
-	label := agentLabel(input, output)
+	label := agentLabel(agentLabelPrefix, hash)
 
 	require.Equal(t, "dev.ranokay.driveignore.watch."+hash, label)
-	require.Equal(t, label, agentLabel(input, output), "the same pair must map to the same agent")
-	require.NotEqual(t, label, agentLabel(output, input), "the direction of the pair is part of its identity")
-	require.NotEqual(t, label, agentLabel(input, output+"/other"))
+	require.Equal(t, label, agentLabel(agentLabelPrefix, hash), "the same key must map to the same agent")
+	require.NotEqual(t, label, agentLabel(guardLabelPrefix, hash), "watch and guard agents are distinct")
+	otherHash, err := driveignore.WatchPairHash(output, input)
+	require.NoError(t, err)
+	require.NotEqual(t, label, agentLabel(agentLabelPrefix, otherHash), "the direction of the pair is part of its identity")
 }
 
 // TestWatchRejectsInstallAndUninstallTogether pins the flag wiring; the usage
@@ -114,9 +112,7 @@ func agentTestConfig(t *testing.T, label string) agentConfig {
 	t.Helper()
 	return agentConfig{
 		Label:   label,
-		Binary:  "/bin/driveignore",
-		Input:   "/in",
-		Output:  "/out",
+		Args:    []string{"/bin/driveignore", "watch", "/out", "-i", "/in"},
 		LogPath: filepath.Join(t.TempDir(), "Library", "Logs", "driveignore", "watch-test.log"),
 	}
 }
