@@ -195,6 +195,9 @@ func TestGuardDryRunNeverMutates(t *testing.T) {
 }
 
 func TestGuardPrunesUnchangedDirectories(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory change stamps are unavailable on windows, so every pass walks the whole tree")
+	}
 	root := t.TempDir()
 	write(t, filepath.Join(root, ".driveignore"), "node_modules/\n")
 	write(t, filepath.Join(root, "src", "a.go"), "x")
