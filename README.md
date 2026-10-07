@@ -89,6 +89,7 @@ Commands:
   clean    cleans the drive folder from files that no longer exist in the source
   diff     compares the source with the drive folder
   global   prints the path to the global .driveignore
+  guard    keeps ignored paths in a My Drive folder sealed from sync (macOS)
   unify    uploads the source and removes legacy files in one go
   upload   hardlinks the source into the drive folder
   watch    keeps the source and the drive folder reconciled continuously
@@ -104,16 +105,17 @@ Every command documents its flags in `--help`. The shared flags are:
   `watch`
 - `-M, --merge-ignores`: merge the global and the local `.driveignore`
 - `--force` (`upload` only): overwrite existing files with the same name
-- `--dry-run` (`clean`, `watch`): `clean` lists the files that would be removed
-  without removing them; `watch` prints every action a pass would take without
-  changing anything
-- `--once`, `--one-way`, `--interval` (`watch`): run a single pass, make the
-  source authoritative, or set the base poll interval
+- `--dry-run` (`clean`, `watch`, `guard`): `clean` lists the files that would be
+  removed without removing them; `watch` and `guard` print every action a pass
+  would take without changing anything
+- `--once`, `--interval` (`watch`, `guard`): run a single pass, or set the base
+  poll interval; `--one-way` (`watch`) makes the source authoritative
 - `--trash-dir` (`watch`): directory local deletions move to (default
   `~/.Trash`; set it where that directory does not exist, for example on Linux
   or Windows)
-- `--install`, `--uninstall` (`watch`, macOS only): install or remove the
-  launchd agent that keeps the pair reconciled from login
+- `--install`, `--uninstall` (`watch`, `guard`, macOS only): install or remove
+  the launchd agent that keeps the pair reconciled, or the folder sealed, from
+  login
 - `--prune-ignored` (`clean`, `unify`): also remove drive files excluded by
   `.driveignore`, even when the source still contains them
 - `--copy` (`upload`, `unify`): copy files instead of hardlinking them, for
@@ -163,6 +165,38 @@ The agent runs the same binary that invoked the command and logs stdout and
 stderr to `~/Library/Logs/driveignore/watch-<pair>.log`, one file per pair.
 `--uninstall` unloads the agent and removes it; the logs stay. Both flags are
 macOS-only.
+
+## guard (macOS)
+
+```sh
+driveignore guard "/path/to/folder in My Drive"
+```
+
+`guard` is for working directly inside My Drive instead of mirroring a folder
+into it. It reads the `.driveignore` in the guarded folder (falling back to the
+global one), watches for changes, and stamps every matching path with the File
+Provider attribute Google Drive for desktop honors as "keep this on disk, leave
+it out of the cloud". A sealed directory covers everything created inside it
+later, so an install or a build cannot leak; removing a rule unstamps the path
+again. Junk that was already uploaded loses its cloud copy on the first pass.
+
+The attribute is an Apple File Provider mechanism that Google's client honors
+today. It is not a documented Google feature, so a Drive update could stop
+respecting it; the failure is visible, junk starts uploading, and the next pass
+reverses it. The window between a path appearing and being stamped is about one
+poll interval.
+
+Run `--once` for a single pass, `--dry-run` to see what would be stamped, and
+`--install` to keep it running from login:
+
+```sh
+driveignore guard "/path/to/folder in My Drive" --install
+```
+
+The agent logs to `~/Library/Logs/driveignore/guard-<folder>.log`. Nested
+`.driveignore` files inside the guarded folder are not read yet; the folder's
+own file is the contract. Symlinks and Google's `.gdoc` stubs are never
+stamped. Do not point `guard` and `watch` at the same folder.
 
 ## global .driveignore
 

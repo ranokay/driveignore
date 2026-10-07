@@ -91,7 +91,7 @@ func assertHardlinked(t *testing.T, first, second string) {
 	require.True(t, os.SameFile(firstInfo, secondInfo), "%s and %s are not hardlinked", first, second)
 }
 
-func TestNextWatchInterval(t *testing.T) {
+func TestNextPollInterval(t *testing.T) {
 	tests := []struct {
 		name       string
 		prev       time.Duration
@@ -100,22 +100,22 @@ func TestNextWatchInterval(t *testing.T) {
 		failed     bool
 		want       time.Duration
 	}{
-		{"idle doubles from the base", watchBaseInterval, watchBaseInterval, false, false, 2 * watchBaseInterval},
-		{"idle stops at the maximum", 40 * time.Second, watchBaseInterval, false, false, watchMaxInterval},
-		{"idle stays at the maximum", watchMaxInterval, watchBaseInterval, false, false, watchMaxInterval},
-		{"actions reset to the base", watchMaxInterval, watchBaseInterval, true, false, watchBaseInterval},
-		{"actions reset to a custom base", watchMaxInterval, 30 * time.Second, true, false, 30 * time.Second},
+		{"idle doubles from the base", pollBaseInterval, pollBaseInterval, false, false, 2 * pollBaseInterval},
+		{"idle stops at the maximum", 40 * time.Second, pollBaseInterval, false, false, pollMaxInterval},
+		{"idle stays at the maximum", pollMaxInterval, pollBaseInterval, false, false, pollMaxInterval},
+		{"actions reset to the base", pollMaxInterval, pollBaseInterval, true, false, pollBaseInterval},
+		{"actions reset to a custom base", pollMaxInterval, 30 * time.Second, true, false, 30 * time.Second},
 		{"a custom base lowers the floor", 0, time.Second, false, false, time.Second},
 		{"idle doubles a custom base", 5 * time.Second, 5 * time.Second, false, false, 10 * time.Second},
-		{"idle caps a custom base at the maximum", 40 * time.Second, 30 * time.Second, false, false, watchMaxInterval},
-		{"a failure doubles", watchBaseInterval, watchBaseInterval, false, true, 2 * watchBaseInterval},
-		{"a failure stops at the maximum", 45 * time.Second, watchBaseInterval, false, true, watchMaxInterval},
-		{"a failure backs off even after progress", watchBaseInterval, watchBaseInterval, true, true, 2 * watchBaseInterval},
-		{"a zero interval floors at the base", 0, watchBaseInterval, false, false, watchBaseInterval},
+		{"idle caps a custom base at the maximum", 40 * time.Second, 30 * time.Second, false, false, pollMaxInterval},
+		{"a failure doubles", pollBaseInterval, pollBaseInterval, false, true, 2 * pollBaseInterval},
+		{"a failure stops at the maximum", 45 * time.Second, pollBaseInterval, false, true, pollMaxInterval},
+		{"a failure backs off even after progress", pollBaseInterval, pollBaseInterval, true, true, 2 * pollBaseInterval},
+		{"a zero interval floors at the base", 0, pollBaseInterval, false, false, pollBaseInterval},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, nextWatchInterval(tt.prev, tt.base, tt.hadActions, tt.failed))
+			require.Equal(t, tt.want, nextPollInterval(tt.prev, tt.base, tt.hadActions, tt.failed))
 		})
 	}
 }

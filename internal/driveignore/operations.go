@@ -36,6 +36,9 @@ type Config struct {
 	removeFn     func(string) error                  // nil means os.Remove
 	copyFileFn   func(sourcePath, dst string) error  // nil means copyFile
 	globalPathFn func() (string, error)              // nil means GlobalIgnorePath
+	setSealFn    func(string) error                  // nil means setIgnoreAttr
+	clearSealFn  func(string) error                  // nil means removeIgnoreAttr
+	hasSealFn    func(string) (bool, error)          // nil means hasIgnoreAttr
 }
 
 // UploadOptions configures Upload. Force overwrites existing entries with the
